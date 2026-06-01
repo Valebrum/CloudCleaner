@@ -197,6 +197,19 @@
   #loading { display: none; align-items: center; gap: 8px; color: var(--muted); margin-top: 14px; }
   #loading.show { display: flex; }
 
+  /* ---- progress modal ---- */
+  .prog-bar { background: var(--bg); border: 1px solid var(--border); border-radius: 20px; height: 18px; overflow: hidden; margin: 14px 0 8px; }
+  .prog-bar > i { display: block; height: 100%; border-radius: 20px; width: 0;
+    background: linear-gradient(90deg, var(--accent-2), var(--cloud)); transition: width .25s ease;
+    background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
+  @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .prog-bar > i.done { animation: none; background: var(--green); }
+  .prog-meta { display: flex; justify-content: space-between; font-size: 14px; font-weight: 600; }
+  .prog-meta #progPct { color: var(--cloud); }
+  .prog-file { margin-top: 10px; font-size: 12px; color: var(--muted); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prog-eta { margin-top: 8px; font-size: 12px; color: var(--muted); min-height: 16px; }
+
   footer { margin-top: 30px; text-align: center; color: var(--muted); font-size: 12px; }
   footer a { color: var(--cloud); text-decoration: none; }
 
@@ -214,7 +227,7 @@
     <div style="flex:1">
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <h1>OneDriveCleaner</h1>
-        <span class="ver">v0.8.3</span>
+        <span class="ver">v1.0.0</span>
       </div>
       <p class="sub">Visualize tamanho lógico vs. local e libere espaço do OneDrive com um clique.</p>
     </div>
@@ -263,7 +276,7 @@
   </div>
 
   <footer>
-    OneDriveCleaner v0.8.3 — Idealizador: Nelson Brum · Desenvolvido por Claude + Nelson ·
+    OneDriveCleaner v1.0.0 — Idealizador: Nelson Brum · Desenvolvido por Claude + Nelson ·
     <a href="https://github.com/Valebrum/OneDriveCleaner" target="_blank">GitHub</a><br>
     © 2026 Grupo Valebrum — Licença Proprietária v1.1
   </footer>
@@ -280,6 +293,23 @@
     <div class="modal-actions">
       <button class="ghost" id="modalCancel">Cancelar</button>
       <button id="modalConfirm">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal de progresso -->
+<div class="overlay" id="progOverlay">
+  <div class="modal">
+    <h3 id="progTitle">Processando…</h3>
+    <div class="prog-bar"><i id="progFill" style="width:0%"></i></div>
+    <div class="prog-meta">
+      <span id="progPct">0%</span>
+      <span id="progCount">0 de 0</span>
+    </div>
+    <div class="prog-file" id="progFile" title="">—</div>
+    <div class="prog-eta" id="progEta"></div>
+    <div class="modal-actions">
+      <button class="ghost" id="progCancel">Cancelar</button>
     </div>
   </div>
 </div>
@@ -470,6 +500,104 @@ async function scan(path) {
   }
 }
 
+// ---------- progress (SSE) ----------
+let activeES = null;
+function fmtDuration(sec) {
+  if (!isFinite(sec) || sec < 0) return '';
+  sec = Math.round(sec);
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return m + 'm ' + s + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h ' + (m % 60) + 'm';
+}
+
+// Executa uma operação com progresso via Server-Sent Events.
+// endpoint: '/api/free-space' ou '/api/delete'. Resolve com o objeto 'done'.
+function runWithProgress({ endpoint, path, title }) {
+  return new Promise((resolve) => {
+    $('progTitle').textContent = title;
+    $('progFill').style.width = '0%';
+    $('progFill').classList.remove('done');
+    $('progPct').textContent = '0%';
+    $('progCount').textContent = '0 de 0';
+    $('progFile').textContent = 'Preparando…';
+    $('progFile').title = '';
+    $('progEta').textContent = '';
+    $('progCancel').disabled = false;
+    $('progOverlay').classList.add('show');
+
+    const t0 = performance.now();
+    const es = new EventSource(API + endpoint + '?path=' + encodeURIComponent(path));
+    activeES = es;
+    let cancelled = false;
+    let lastData = null;
+
+    function finish(result) {
+      es.close();
+      activeES = null;
+      setTimeout(() => $('progOverlay').classList.remove('show'), result && result.phase === 'done' ? 350 : 0);
+      resolve(result);
+    }
+
+    es.onmessage = (ev) => {
+      let d; try { d = JSON.parse(ev.data); } catch { return; }
+      lastData = d;
+
+      if (d.phase === 'start') {
+        $('progCount').textContent = '0 de ' + fmtNum(d.total);
+        $('progFile').textContent = d.total ? 'Iniciando…' : 'Nada a processar.';
+        return;
+      }
+      if (d.phase === 'progress') {
+        const pct = d.total ? (d.current / d.total) * 100 : 0;
+        $('progFill').style.width = pct.toFixed(1) + '%';
+        $('progPct').textContent = pct.toFixed(0) + '%';
+        $('progCount').textContent = fmtNum(d.current) + ' de ' + fmtNum(d.total);
+        $('progFile').textContent = d.currentFile || '';
+        $('progFile').title = d.currentFile || '';
+        // ETA
+        const elapsed = (performance.now() - t0) / 1000;
+        if (d.current > 0 && d.current < d.total) {
+          const rate = d.current / elapsed;
+          const eta = (d.total - d.current) / rate;
+          $('progEta').textContent = 'Tempo restante estimado: ' + fmtDuration(eta);
+        }
+        return;
+      }
+      if (d.phase === 'done') {
+        $('progFill').style.width = '100%';
+        $('progFill').classList.add('done');
+        $('progPct').textContent = '100%';
+        $('progCount').textContent = fmtNum(d.current || 0) + ' de ' + fmtNum(d.total || 0);
+        $('progFile').textContent = 'Concluído ✓';
+        $('progEta').textContent = '';
+        finish(d);
+        return;
+      }
+      if (d.phase === 'error') {
+        finish(d);
+      }
+    };
+
+    es.onerror = () => {
+      // Stream encerrado pelo servidor após 'done' também dispara onerror; só tratamos
+      // como falha se ainda não recebemos 'done' e o usuário não cancelou.
+      if (cancelled) return;
+      if (lastData && lastData.phase === 'done') return;
+      finish({ phase: 'error', message: 'Conexão interrompida.' });
+    };
+
+    $('progCancel').onclick = () => {
+      cancelled = true;
+      es.close();
+      activeES = null;
+      $('progOverlay').classList.remove('show');
+      resolve({ phase: 'cancelled' });
+    };
+  });
+}
+
 async function freeSpace(f) {
   const ok = await confirmModal({
     title: '☁️ Liberar espaço local',
@@ -478,13 +606,8 @@ async function freeSpace(f) {
     confirmText: 'Liberar espaço'
   });
   if (!ok) return;
-  try {
-    const r = await apiPost(API + '/api/free-space', { path: f.path });
-    toast(r.message || 'Espaço liberado.', 'ok');
-    await scan(currentData.path); // re-scan para atualizar números
-  } catch (e) {
-    toast('Erro ao liberar: ' + e.message, 'err');
-  }
+  const r = await runWithProgress({ endpoint: '/api/free-space', path: f.path, title: '☁️ Liberando espaço…' });
+  handleResult(r, 'liberar');
 }
 
 async function deleteFolder(f) {
@@ -496,13 +619,8 @@ async function deleteFolder(f) {
     danger: true
   });
   if (!ok) return;
-  try {
-    const r = await apiPost(API + '/api/delete', { path: f.path });
-    toast(r.message || 'Arquivos deletados.', 'ok');
-    await scan(currentData.path);
-  } catch (e) {
-    toast('Erro ao deletar: ' + e.message, 'err');
-  }
+  const r = await runWithProgress({ endpoint: '/api/delete', path: f.path, title: '🗑️ Deletando arquivos…' });
+  handleResult(r, 'deletar');
 }
 
 async function freeAll() {
@@ -514,13 +632,16 @@ async function freeAll() {
     confirmText: 'Liberar tudo'
   });
   if (!ok) return;
-  try {
-    const r = await apiPost(API + '/api/free-space', { path: currentData.path });
-    toast(r.message || 'Espaço liberado.', 'ok');
-    await scan(currentData.path);
-  } catch (e) {
-    toast('Erro ao liberar: ' + e.message, 'err');
-  }
+  const r = await runWithProgress({ endpoint: '/api/free-space', path: currentData.path, title: '☁️ Liberando espaço…' });
+  handleResult(r, 'liberar');
+}
+
+async function handleResult(r, verb) {
+  if (!r) return;
+  if (r.phase === 'cancelled') { toast('Operação cancelada.', 'warn'); await scan(currentData.path); return; }
+  if (r.phase === 'error') { toast('Erro ao ' + verb + ': ' + (r.message || 'desconhecido'), 'err'); return; }
+  toast(r.message || 'Operação concluída.', 'ok');
+  await scan(currentData.path); // re-scan para atualizar números
 }
 
 // ---------- sorting ----------
