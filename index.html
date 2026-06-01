@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OneDriveCleaner — Analisador de Pastas OneDrive</title>
+<style>
+  :root {
+    --bg:        #0F1A30;
+    --panel:     #1B2A4A;
+    --panel-2:   #223561;
+    --accent:    #2E4A7A;
+    --accent-2:  #3D6BB5;
+    --text:      #E6EDF7;
+    --muted:     #93A4C4;
+    --green:     #36B37E;
+    --yellow:    #F5A623;
+    --red:       #E5484D;
+    --cloud:     #5AA9E6;
+    --border:    #2B3F66;
+    --radius:    12px;
+    --shadow:    0 6px 24px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: linear-gradient(160deg, var(--bg), #0A1326 70%);
+    color: var(--text);
+    font-family: "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    font-size: 15px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 18px 60px; }
+
+  header.app {
+    display: flex; align-items: center; gap: 14px; margin-bottom: 6px;
+  }
+  header.app .logo {
+    width: 46px; height: 46px; border-radius: 12px; flex: none;
+    background: linear-gradient(135deg, var(--accent-2), var(--cloud));
+    display: grid; place-items: center; font-size: 24px;
+    box-shadow: var(--shadow);
+  }
+  header.app h1 { font-size: 22px; margin: 0; letter-spacing: .3px; }
+  header.app .ver {
+    font-size: 12px; color: var(--muted); background: var(--panel);
+    padding: 2px 8px; border-radius: 20px; border: 1px solid var(--border);
+  }
+  header.app p.sub { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
+    margin-top: 18px;
+  }
+
+  /* ---- input bar ---- */
+  .scan-bar { display: flex; gap: 10px; flex-wrap: wrap; }
+  .scan-bar input[type=text] {
+    flex: 1 1 360px; min-width: 0;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 12px 14px; border-radius: 10px; font-size: 14px; outline: none;
+    transition: border-color .15s;
+  }
+  .scan-bar input[type=text]:focus { border-color: var(--accent-2); }
+  button {
+    cursor: pointer; border: none; border-radius: 10px; font-size: 14px;
+    padding: 12px 18px; font-weight: 600; color: #fff;
+    background: var(--accent-2); transition: filter .15s, transform .05s;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost { background: var(--panel-2); }
+  button.small { padding: 7px 10px; font-size: 13px; }
+
+  .suggestions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .suggestions span.lbl { color: var(--muted); font-size: 13px; }
+  .chip {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 10px; border-radius: 20px; font-size: 12px; cursor: pointer;
+    max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .chip:hover { border-color: var(--accent-2); }
+
+  /* ---- breadcrumb ---- */
+  .crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 13px; margin-top: 4px; }
+  .crumbs .seg { color: var(--cloud); cursor: pointer; }
+  .crumbs .seg:hover { text-decoration: underline; }
+  .crumbs .sep { color: var(--muted); }
+  .crumbs .cur { color: var(--text); }
+
+  /* ---- summary ---- */
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+  .stat { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .stat .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .stat .v { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  .stat .v small { font-size: 13px; color: var(--muted); font-weight: 500; }
+
+  .disk-bar-wrap { margin-top: 14px; }
+  .disk-bar-wrap .lbl { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .bar { background: var(--bg); border: 1px solid var(--border); border-radius: 20px; height: 16px; overflow: hidden; position: relative; }
+  .bar > i { display: block; height: 100%; border-radius: 20px 0 0 20px; }
+  .bar > i.used { background: linear-gradient(90deg, var(--accent-2), var(--cloud)); }
+
+  /* ---- table ---- */
+  .table-tools { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+  .table-tools h2 { font-size: 16px; margin: 0; }
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 720px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { color: var(--text); }
+  tbody tr:hover { background: rgba(61,107,181,.10); }
+  td.name { font-weight: 600; cursor: pointer; color: var(--text); }
+  td.name:hover { color: var(--cloud); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .mini-bar { background: var(--bg); border-radius: 6px; height: 8px; overflow: hidden; margin-top: 5px; min-width: 90px; }
+  .mini-bar > i { display: block; height: 100%; }
+  .mini-bar > i.local { background: var(--green); }
+  .pct { font-size: 12px; color: var(--muted); }
+  .row-actions { display: flex; gap: 6px; white-space: nowrap; }
+  .row-actions button { padding: 6px 9px; font-size: 13px; }
+  .btn-analyze { background: var(--accent-2); }
+  .btn-free    { background: var(--cloud); color: #08233f; }
+  .btn-delete  { background: var(--red); }
+
+  .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+
+  /* ---- toast ---- */
+  #toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 10px; z-index: 50; }
+  .toast {
+    background: var(--panel-2); border: 1px solid var(--border); border-left: 4px solid var(--accent-2);
+    padding: 12px 16px; border-radius: 10px; box-shadow: var(--shadow); max-width: 360px; font-size: 14px;
+    animation: slidein .2s ease;
+  }
+  .toast.ok    { border-left-color: var(--green); }
+  .toast.warn  { border-left-color: var(--yellow); }
+  .toast.err   { border-left-color: var(--red); }
+  @keyframes slidein { from { transform: translateX(20px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+  /* ---- modal ---- */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(4,9,20,.7); display: none;
+    align-items: center; justify-content: center; z-index: 60; padding: 16px;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 22px; max-width: 480px; width: 100%; box-shadow: var(--shadow);
+  }
+  .modal h3 { margin: 0 0 8px; font-size: 18px; }
+  .modal p { color: var(--muted); font-size: 14px; line-height: 1.5; }
+  .modal .path-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 13px; word-break: break-all; margin: 12px 0; }
+  .modal .danger { color: var(--red); font-weight: 600; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+
+  /* ---- spinner ---- */
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -3px; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loading { display: none; align-items: center; gap: 8px; color: var(--muted); margin-top: 14px; }
+  #loading.show { display: flex; }
+
+  footer { margin-top: 30px; text-align: center; color: var(--muted); font-size: 12px; }
+  footer a { color: var(--cloud); text-decoration: none; }
+
+  @media (max-width: 620px) {
+    .stat .v { font-size: 18px; }
+    header.app h1 { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="app">
+    <div class="logo">☁️</div>
+    <div style="flex:1">
+      <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <h1>OneDriveCleaner</h1>
+        <span class="ver">v0.8.3</span>
+      </div>
+      <p class="sub">Visualize tamanho lógico vs. local e libere espaço do OneDrive com um clique.</p>
+    </div>
+  </header>
+
+  <!-- Scan -->
+  <div class="card">
+    <div class="scan-bar">
+      <input type="text" id="pathInput" placeholder="Cole o caminho da pasta (ex: C:\Users\voce\OneDrive)" autocomplete="off" spellcheck="false">
+      <button id="scanBtn">🔍 Analisar</button>
+    </div>
+    <div class="suggestions" id="suggestions"></div>
+    <div class="crumbs" id="crumbs"></div>
+    <div id="loading"><span class="spinner"></span> Analisando pasta, aguarde…</div>
+  </div>
+
+  <!-- Summary -->
+  <div class="card" id="summaryCard" style="display:none">
+    <div class="summary" id="summaryStats"></div>
+    <div class="disk-bar-wrap" id="diskBarWrap"></div>
+  </div>
+
+  <!-- Table -->
+  <div class="card" id="tableCard" style="display:none">
+    <div class="table-tools">
+      <h2>📁 Subpastas</h2>
+      <button class="ghost small" id="freeAllBtn" title="Liberar espaço local de todas as subpastas">☁️ Liberar tudo</button>
+    </div>
+    <div class="table-scroll">
+      <table id="resultTable">
+        <thead>
+          <tr>
+            <th data-sort="index" style="width:48px">#</th>
+            <th data-sort="name">Nome</th>
+            <th data-sort="files" class="num">Arquivos</th>
+            <th data-sort="logicalBytes" class="num">Lógico</th>
+            <th data-sort="localBytes" class="num">Local</th>
+            <th data-sort="localPercent">% Local</th>
+            <th style="width:1%">Ações</th>
+          </tr>
+        </thead>
+        <tbody id="resultBody"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="emptyMsg" style="display:none">Esta pasta não possui subpastas.</div>
+  </div>
+
+  <footer>
+    OneDriveCleaner v0.8.3 — Idealizador: Nelson Brum · Desenvolvido por Claude + Nelson ·
+    <a href="https://github.com/Valebrum/OneDriveCleaner" target="_blank">GitHub</a><br>
+    © 2026 Grupo Valebrum — Licença Proprietária v1.1
+  </footer>
+</div>
+
+<div id="toasts"></div>
+
+<!-- Modal de confirmação -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h3 id="modalTitle">Confirmar</h3>
+    <p id="modalMsg"></p>
+    <div class="path-box" id="modalPath"></div>
+    <div class="modal-actions">
+      <button class="ghost" id="modalCancel">Cancelar</button>
+      <button id="modalConfirm">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let currentData = null;
+let sortKey = 'logicalBytes';
+let sortDir = -1; // -1 desc, 1 asc
+
+const $ = (id) => document.getElementById(id);
+
+// ---------- helpers ----------
+function fmtBytes(b) {
+  if (b == null) return '—';
+  if (b >= 1073741824) return (b / 1073741824).toFixed(2).replace('.', ',') + ' GB';
+  if (b >= 1048576)    return (b / 1048576).toFixed(2).replace('.', ',') + ' MB';
+  if (b >= 1024)       return (b / 1024).toFixed(2).replace('.', ',') + ' KB';
+  return b + ' B';
+}
+function fmtNum(n) { return new Intl.NumberFormat('pt-BR').format(n); }
+
+function toast(msg, type = '') {
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  $('toasts').appendChild(t);
+  setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 4200);
+}
+
+async function apiGet(url) {
+  const r = await fetch(url);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+async function apiPost(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+// ---------- modal ----------
+let modalResolve = null;
+function confirmModal({ title, msg, path, confirmText = 'Confirmar', danger = false }) {
+  $('modalTitle').textContent = title;
+  $('modalMsg').innerHTML = msg;
+  $('modalPath').textContent = path;
+  const cb = $('modalConfirm');
+  cb.textContent = confirmText;
+  cb.className = danger ? 'btn-delete' : '';
+  cb.style.background = danger ? 'var(--red)' : 'var(--accent-2)';
+  $('overlay').classList.add('show');
+  return new Promise((res) => { modalResolve = res; });
+}
+$('modalConfirm').addEventListener('click', () => { $('overlay').classList.remove('show'); modalResolve && modalResolve(true); });
+$('modalCancel').addEventListener('click', () => { $('overlay').classList.remove('show'); modalResolve && modalResolve(false); });
+$('overlay').addEventListener('click', (e) => { if (e.target === $('overlay')) { $('overlay').classList.remove('show'); modalResolve && modalResolve(false); } });
+
+// ---------- breadcrumb ----------
+function renderCrumbs(path) {
+  const el = $('crumbs');
+  el.innerHTML = '';
+  if (!path) return;
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  let accum = '';
+  parts.forEach((part, i) => {
+    // reconstrói o caminho (Windows: C: precisa de \)
+    accum = i === 0 ? (part.endsWith(':') ? part + '\\' : part) : accum.replace(/\\$/, '') + '\\' + part;
+    const seg = document.createElement('span');
+    if (i === parts.length - 1) {
+      seg.className = 'cur';
+      seg.textContent = part;
+    } else {
+      seg.className = 'seg';
+      seg.textContent = part;
+      const target = accum;
+      seg.addEventListener('click', () => scan(target));
+    }
+    el.appendChild(seg);
+    if (i < parts.length - 1) {
+      const sep = document.createElement('span');
+      sep.className = 'sep'; sep.textContent = ' \\ ';
+      el.appendChild(sep);
+    }
+  });
+}
+
+// ---------- render summary ----------
+function renderSummary(data) {
+  const t = data.totals;
+  const d = data.disk;
+  const savable = t.logicalBytes - t.localBytes;
+  $('summaryStats').innerHTML = `
+    <div class="stat"><div class="k">Espaço livre no disco ${d ? d.Drive : ''}</div><div class="v">${d ? fmtBytes(d.FreeBytes) : '—'}</div></div>
+    <div class="stat"><div class="k">Tamanho lógico (nuvem)</div><div class="v">${fmtBytes(t.logicalBytes)} <small>${fmtNum(t.files)} arq.</small></div></div>
+    <div class="stat"><div class="k">Ocupado no disco (local)</div><div class="v">${fmtBytes(t.localBytes)} <small>${t.localPercent}%</small></div></div>
+    <div class="stat"><div class="k">Liberável (☁️ só-na-nuvem)</div><div class="v" style="color:var(--cloud)">${fmtBytes(savable > 0 ? savable : t.localBytes)}</div></div>
+  `;
+  if (d && d.TotalBytes > 0) {
+    const usedPct = Math.min(100, (d.UsedBytes / d.TotalBytes) * 100);
+    $('diskBarWrap').innerHTML = `
+      <div class="lbl"><span>Uso do disco ${d.Drive}</span><span>${fmtBytes(d.UsedBytes)} / ${fmtBytes(d.TotalBytes)} (${usedPct.toFixed(0)}%)</span></div>
+      <div class="bar"><i class="used" style="width:${usedPct}%"></i></div>`;
+  } else {
+    $('diskBarWrap').innerHTML = '';
+  }
+  $('summaryCard').style.display = '';
+}
+
+// ---------- render table ----------
+function sortedFolders() {
+  const arr = [...currentData.subfolders];
+  arr.sort((a, b) => {
+    let va = a[sortKey], vb = b[sortKey];
+    if (typeof va === 'string') { va = va.toLowerCase(); vb = vb.toLowerCase(); }
+    if (va < vb) return -1 * sortDir;
+    if (va > vb) return  1 * sortDir;
+    return 0;
+  });
+  return arr;
+}
+
+function renderTable() {
+  const body = $('resultBody');
+  body.innerHTML = '';
+  const folders = sortedFolders();
+  const maxLogical = Math.max(1, ...currentData.subfolders.map(f => f.logicalBytes));
+
+  if (folders.length === 0) {
+    $('emptyMsg').style.display = '';
+  } else {
+    $('emptyMsg').style.display = 'none';
+  }
+
+  folders.forEach((f) => {
+    const tr = document.createElement('tr');
+    const logicalW = (f.logicalBytes / maxLogical) * 100;
+    const localW = f.logicalBytes > 0 ? (f.localBytes / f.logicalBytes) * 100 : 0;
+    tr.innerHTML = `
+      <td class="num">${f.index}</td>
+      <td class="name" title="${f.path}">${escapeHtml(f.name)}
+        <div class="mini-bar" style="width:${Math.max(20, logicalW)}%"><i class="local" style="width:${localW}%"></i></div>
+      </td>
+      <td class="num">${fmtNum(f.files)}</td>
+      <td class="num">${fmtBytes(f.logicalBytes)}</td>
+      <td class="num">${fmtBytes(f.localBytes)}</td>
+      <td class="num"><span class="pct">${f.localPercent}%</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="btn-analyze" title="Analisar subpasta">📂</button>
+          <button class="btn-free" title="Liberar espaço local (só-na-nuvem)">☁️</button>
+          <button class="btn-delete" title="Deletar arquivos">🗑️</button>
+        </div>
+      </td>`;
+    const [bAnalyze, bFree, bDelete] = tr.querySelectorAll('.row-actions button');
+    tr.querySelector('.name').addEventListener('click', () => scan(f.path));
+    bAnalyze.addEventListener('click', () => scan(f.path));
+    bFree.addEventListener('click', () => freeSpace(f));
+    bDelete.addEventListener('click', () => deleteFolder(f));
+    body.appendChild(tr);
+  });
+  $('tableCard').style.display = '';
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// ---------- actions ----------
+async function scan(path) {
+  if (!path) { toast('Informe um caminho.', 'warn'); return; }
+  $('pathInput').value = path;
+  $('loading').classList.add('show');
+  $('scanBtn').disabled = true;
+  try {
+    const data = await apiGet(API + '/api/scan?path=' + encodeURIComponent(path));
+    currentData = data;
+    renderCrumbs(data.path);
+    renderSummary(data);
+    renderTable();
+  } catch (e) {
+    toast('Erro ao analisar: ' + e.message, 'err');
+  } finally {
+    $('loading').classList.remove('show');
+    $('scanBtn').disabled = false;
+  }
+}
+
+async function freeSpace(f) {
+  const ok = await confirmModal({
+    title: '☁️ Liberar espaço local',
+    msg: 'Os arquivos serão mantidos na nuvem e tornados <b>somente-nuvem</b> (não serão excluídos). Eles voltam ao disco quando abertos novamente.',
+    path: f.path,
+    confirmText: 'Liberar espaço'
+  });
+  if (!ok) return;
+  try {
+    const r = await apiPost(API + '/api/free-space', { path: f.path });
+    toast(r.message || 'Espaço liberado.', 'ok');
+    await scan(currentData.path); // re-scan para atualizar números
+  } catch (e) {
+    toast('Erro ao liberar: ' + e.message, 'err');
+  }
+}
+
+async function deleteFolder(f) {
+  const ok = await confirmModal({
+    title: '🗑️ Deletar arquivos',
+    msg: '<span class="danger">ATENÇÃO:</span> isto <b>APAGA definitivamente</b> os arquivos desta pasta. Se a pasta estiver sincronizada, eles também serão removidos da nuvem.',
+    path: f.path,
+    confirmText: 'Deletar definitivamente',
+    danger: true
+  });
+  if (!ok) return;
+  try {
+    const r = await apiPost(API + '/api/delete', { path: f.path });
+    toast(r.message || 'Arquivos deletados.', 'ok');
+    await scan(currentData.path);
+  } catch (e) {
+    toast('Erro ao deletar: ' + e.message, 'err');
+  }
+}
+
+async function freeAll() {
+  if (!currentData || !currentData.subfolders.length) return;
+  const ok = await confirmModal({
+    title: '☁️ Liberar espaço de TODAS as subpastas',
+    msg: 'Todos os arquivos locais das subpastas listadas serão tornados <b>somente-nuvem</b>. Nada é excluído da nuvem.',
+    path: currentData.path + '  (' + currentData.subfolders.length + ' subpastas)',
+    confirmText: 'Liberar tudo'
+  });
+  if (!ok) return;
+  try {
+    const r = await apiPost(API + '/api/free-space', { path: currentData.path });
+    toast(r.message || 'Espaço liberado.', 'ok');
+    await scan(currentData.path);
+  } catch (e) {
+    toast('Erro ao liberar: ' + e.message, 'err');
+  }
+}
+
+// ---------- sorting ----------
+document.querySelectorAll('th[data-sort]').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.sort;
+    if (sortKey === key) { sortDir *= -1; } else { sortKey = key; sortDir = (key === 'name' || key === 'index') ? 1 : -1; }
+    if (currentData) renderTable();
+  });
+});
+
+// ---------- suggestions ----------
+async function loadSuggestions() {
+  try {
+    const { paths } = await apiGet(API + '/api/suggestions');
+    const el = $('suggestions');
+    if (!paths || !paths.length) return;
+    el.innerHTML = '<span class="lbl">Sugestões:</span>';
+    paths.forEach(p => {
+      const c = document.createElement('span');
+      c.className = 'chip'; c.textContent = p; c.title = p;
+      c.addEventListener('click', () => scan(p));
+      el.appendChild(c);
+    });
+  } catch (e) { /* silencioso */ }
+}
+
+// ---------- bindings ----------
+$('scanBtn').addEventListener('click', () => scan($('pathInput').value.trim()));
+$('pathInput').addEventListener('keydown', e => { if (e.key === 'Enter') scan($('pathInput').value.trim()); });
+$('freeAllBtn').addEventListener('click', freeAll);
+
+loadSuggestions();
+</script>
+</body>
+</html>

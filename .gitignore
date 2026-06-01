@@ -1,0 +1,24 @@
+# Logs e temporários
+*.log
+*.tmp
+~$*
+
+# Sistema operacional
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Editores / IDEs
+.vs/
+.vscode/
+*.suo
+*.user
+
+# PowerShell
+*.ps1xml.bak
+
+# Saídas locais de teste
+/test-output/
+/tmp/
