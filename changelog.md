@@ -7,6 +7,18 @@ seguindo [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [Não lançado]
+### Adicionado
+- **Dashboard de discos**: `/api/suggestions` agora varre todos os volumes do sistema (`Get-PSDrive`) e retorna letra, rótulo, total, usado, livre e % de uso por disco.
+- Detecção automática de OneDrive por disco (variáveis `OneDrive*` + pastas `OneDrive*` na raiz de cada drive), com destaque visual nos cards.
+- Atalhos diretos para os caminhos OneDrive detectados dentro de cada card de disco.
+
+### Melhorado
+- Seção de sugestões transformada em mini-dashboard com cards e barras de uso (verde/amarelo/vermelho conforme ocupação); clicar no disco inicia a análise.
+- Colunas numéricas da tabela (#, Arquivos, Lógico, Local, % Local) alinhadas à direita também no cabeçalho.
+
+---
+
 ## [0.8.3] – 2026-05-31
 ### Adicionado
 - **Interface HTML visual** (tema escuro Valebrum, responsiva, sem frameworks).

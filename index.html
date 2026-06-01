@@ -74,7 +74,7 @@
   button.ghost { background: var(--panel-2); }
   button.small { padding: 7px 10px; font-size: 13px; }
 
-  .suggestions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .suggestions { margin-top: 12px; }
   .suggestions span.lbl { color: var(--muted); font-size: 13px; }
   .chip {
     background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
@@ -82,6 +82,41 @@
     max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .chip:hover { border-color: var(--accent-2); }
+
+  /* ---- disk dashboard ---- */
+  .disks-head { display: flex; align-items: center; gap: 8px; margin-top: 16px; margin-bottom: 8px; }
+  .disks-head .lbl { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .5px; }
+  .disks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .disk-card {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px; cursor: pointer; transition: border-color .15s, transform .05s;
+    position: relative;
+  }
+  .disk-card:hover { border-color: var(--accent-2); }
+  .disk-card:active { transform: translateY(1px); }
+  .disk-card.has-od { border-color: var(--cloud); }
+  .disk-card .dc-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .disk-card .dc-letter { font-size: 20px; font-weight: 700; }
+  .disk-card .dc-label { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .disk-card .dc-od {
+    position: absolute; top: 10px; right: 10px; font-size: 11px; color: var(--cloud);
+    background: rgba(90,169,230,.12); border: 1px solid rgba(90,169,230,.4);
+    padding: 1px 7px; border-radius: 20px;
+  }
+  .disk-card .dc-bar { background: var(--panel-2); border-radius: 20px; height: 10px; overflow: hidden; margin: 12px 0 8px; }
+  .disk-card .dc-bar > i { display: block; height: 100%; border-radius: 20px; }
+  .disk-card .dc-bar > i.ok   { background: linear-gradient(90deg, var(--accent-2), var(--cloud)); }
+  .disk-card .dc-bar > i.warn { background: linear-gradient(90deg, var(--accent-2), var(--yellow)); }
+  .disk-card .dc-bar > i.full { background: linear-gradient(90deg, var(--yellow), var(--red)); }
+  .disk-card .dc-meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .disk-card .dc-meta b { color: var(--text); font-weight: 600; }
+  .disk-card .dc-paths { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .disk-card .dc-path {
+    font-size: 11px; color: var(--cloud); background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 7px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .disk-card .dc-path:hover { border-color: var(--cloud); }
 
   /* ---- breadcrumb ---- */
   .crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 13px; margin-top: 4px; }
@@ -115,6 +150,7 @@
   td.name { font-weight: 600; cursor: pointer; color: var(--text); }
   td.name:hover { color: var(--cloud); }
   td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th.num { text-align: right; }
   .mini-bar { background: var(--bg); border-radius: 6px; height: 8px; overflow: hidden; margin-top: 5px; min-width: 90px; }
   .mini-bar > i { display: block; height: 100%; }
   .mini-bar > i.local { background: var(--green); }
@@ -211,12 +247,12 @@
       <table id="resultTable">
         <thead>
           <tr>
-            <th data-sort="index" style="width:48px">#</th>
+            <th data-sort="index" class="num" style="width:48px">#</th>
             <th data-sort="name">Nome</th>
             <th data-sort="files" class="num">Arquivos</th>
             <th data-sort="logicalBytes" class="num">Lógico</th>
             <th data-sort="localBytes" class="num">Local</th>
-            <th data-sort="localPercent">% Local</th>
+            <th data-sort="localPercent" class="num">% Local</th>
             <th style="width:1%">Ações</th>
           </tr>
         </thead>
@@ -498,17 +534,60 @@ document.querySelectorAll('th[data-sort]').forEach(th => {
 
 // ---------- suggestions ----------
 async function loadSuggestions() {
+  const el = $('suggestions');
   try {
-    const { paths } = await apiGet(API + '/api/suggestions');
-    const el = $('suggestions');
-    if (!paths || !paths.length) return;
-    el.innerHTML = '<span class="lbl">Sugestões:</span>';
-    paths.forEach(p => {
-      const c = document.createElement('span');
-      c.className = 'chip'; c.textContent = p; c.title = p;
-      c.addEventListener('click', () => scan(p));
-      el.appendChild(c);
+    const { disks } = await apiGet(API + '/api/suggestions');
+    if (!disks || !disks.length) return;
+
+    el.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'disks-head';
+    head.innerHTML = '<span class="lbl">💽 Discos do sistema</span><span style="color:var(--cloud);font-size:12px">☁️ = OneDrive detectado</span>';
+    el.appendChild(head);
+
+    const grid = document.createElement('div');
+    grid.className = 'disks';
+
+    disks.forEach(d => {
+      const card = document.createElement('div');
+      card.className = 'disk-card' + (d.hasOneDrive ? ' has-od' : '');
+      card.title = 'Analisar ' + d.root;
+
+      const pct = d.usedPercent;
+      const barCls = pct >= 90 ? 'full' : (pct >= 75 ? 'warn' : 'ok');
+
+      card.innerHTML = `
+        ${d.hasOneDrive ? '<span class="dc-od">☁️ OneDrive</span>' : ''}
+        <div class="dc-top">
+          <span class="dc-letter">${d.letter}</span>
+          <span class="dc-label">${d.label ? escapeHtml(d.label) : 'Sem rótulo'}</span>
+        </div>
+        <div class="dc-bar"><i class="${barCls}" style="width:${Math.min(100, pct)}%"></i></div>
+        <div class="dc-meta">
+          <span><b>${fmtBytes(d.freeBytes)}</b> livre</span>
+          <span>${pct}% de ${fmtBytes(d.totalBytes)}</span>
+        </div>`;
+
+      // Clicar no card analisa a raiz do disco
+      card.addEventListener('click', () => scan(d.root));
+
+      // Atalhos diretos para caminhos OneDrive detectados neste disco
+      if (d.oneDrivePaths && d.oneDrivePaths.length) {
+        const pathsBox = document.createElement('div');
+        pathsBox.className = 'dc-paths';
+        d.oneDrivePaths.forEach(p => {
+          const pe = document.createElement('div');
+          pe.className = 'dc-path'; pe.textContent = '☁️ ' + p; pe.title = p;
+          pe.addEventListener('click', (ev) => { ev.stopPropagation(); scan(p); });
+          pathsBox.appendChild(pe);
+        });
+        card.appendChild(pathsBox);
+      }
+
+      grid.appendChild(card);
     });
+
+    el.appendChild(grid);
   } catch (e) { /* silencioso */ }
 }
 
