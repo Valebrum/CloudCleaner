@@ -7,15 +7,24 @@ seguindo [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [Não lançado]
-### Adicionado
-- **Dashboard de discos**: `/api/suggestions` agora varre todos os volumes do sistema (`Get-PSDrive`) e retorna letra, rótulo, total, usado, livre e % de uso por disco.
-- Detecção automática de OneDrive por disco (variáveis `OneDrive*` + pastas `OneDrive*` na raiz de cada drive), com destaque visual nos cards.
-- Atalhos diretos para os caminhos OneDrive detectados dentro de cada card de disco.
+## [1.0.0] – 2026-06-01
+Primeira versão estável. 🎉
 
-### Melhorado
+### Adicionado
+- **Barra de progresso em tempo real** para liberar espaço e deletar, via **Server-Sent Events (SSE)**: o backend processa arquivo a arquivo e transmite o progresso ao vivo.
+- Modal de progresso com barra animada, percentual, contagem (X de Y), nome do arquivo atual e **estimativa de tempo restante (ETA)**.
+- **Botão Cancelar** durante a operação: ao fechar o stream, o servidor detecta a desconexão e interrompe o processamento.
+- **Dashboard de discos**: `/api/suggestions` varre todos os volumes do sistema (`Get-PSDrive`) e retorna letra, rótulo, total, usado, livre e % de uso por disco.
+- Detecção automática de OneDrive por disco (variáveis `OneDrive*` + pastas `OneDrive*` na raiz de cada drive), com destaque visual nos cards e atalhos diretos para cada caminho.
+
+### Alterado
+- **Endpoints `/api/free-space` e `/api/delete` agora respondem via SSE (GET)** em vez de JSON único (POST), permitindo progresso incremental.
+- Liberação de espaço passa a usar a **API nativa Win32 (`SetFileAttributesW`)** para definir os atributos de nuvem `UNPINNED`/`PINNED` (equivalente a `attrib +U -P`), preservando os demais atributos e permitindo progresso por arquivo. O enum `[System.IO.FileAttributes]` do .NET rejeita esses bits, por isso a chamada nativa.
 - Seção de sugestões transformada em mini-dashboard com cards e barras de uso (verde/amarelo/vermelho conforme ocupação); clicar no disco inicia a análise.
 - Colunas numéricas da tabela (#, Arquivos, Lógico, Local, % Local) alinhadas à direita também no cabeçalho.
+
+### Removido
+- Funções não-streaming `Invoke-LiberarEspaco` e `Invoke-Deletar` (substituídas pelas versões com progresso `Invoke-LiberarEspacoStream` / `Invoke-DeletarStream`).
 
 ---
 

@@ -1,6 +1,6 @@
 # ![OneDriveCleaner](https://img.shields.io/badge/Valebrum-OneDriveCleaner-blue) OneDriveCleaner — Analisador e Otimizador de Pastas OneDrive
 
-![Versão](https://img.shields.io/badge/vers%C3%A3o-0.8.3-success)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-1.0.0-success)
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.x%20%7C%207%2B-5391FE?logo=powershell&logoColor=white)
 ![Plataforma](https://img.shields.io/badge/plataforma-Windows-0078D6?logo=windows&logoColor=white)
 ![Licença](https://img.shields.io/badge/licen%C3%A7a-Propriet%C3%A1ria%20Valebrum%20v1.1-red)
@@ -16,13 +16,13 @@
 | Funcionalidade | Descrição |
 |:--|:--|
 | 📊 **Lógico vs. Local** | Compara o tamanho total (nuvem) com o que ocupa de fato no disco |
-| ☁️ **Liberar espaço** | Torna arquivos *somente-nuvem* (`attrib +U -P`) sem excluí-los da nuvem |
+| ☁️ **Liberar espaço** | Torna arquivos *somente-nuvem* (`+U -P`) sem excluí-los da nuvem |
 | 🗑️ **Deletar arquivos** | Remove arquivos definitivamente (com modal de confirmação) |
+| ⏳ **Progresso ao vivo** | Barra de progresso via SSE com %, contagem, arquivo atual, ETA e **cancelar** |
+| 💽 **Dashboard de discos** | Cards de todos os volumes com rótulo, uso, livre e OneDrive detectado |
 | 📂 **Drill-down** | Clique numa subpasta para navegar e analisar mais fundo |
 | 🧭 **Breadcrumb** | Navegação por trilha de pastas, com volta a qualquer nível |
-| 💽 **Espaço em disco** | Barra de uso do volume e espaço livre em tempo real |
 | 📈 **Barras visuais** | Proporção lógico/local por subpasta, ordenável por coluna |
-| 🎯 **Auto-sugestões** | Detecta caminhos OneDrive comuns como ponto de partida |
 | 🌑 **Tema escuro Valebrum** | Interface responsiva (desktop e celular), sem frameworks |
 | 🔒 **100% local** | Servidor HTTP temporário em `localhost:8080` — nada sai da máquina |
 
@@ -122,9 +122,13 @@ O backend expõe endpoints simples em `http://localhost:8080`:
 |--------|----------|-----------|
 | `GET`  | `/api/scan?path=<caminho>` | Subpastas com tamanhos lógico/local e totais |
 | `GET`  | `/api/disk-free?path=<caminho>` | Espaço livre/usado do volume |
-| `GET`  | `/api/suggestions` | Caminhos OneDrive detectados |
-| `POST` | `/api/free-space` `{ "path": "..." }` | Libera espaço (somente-nuvem) |
-| `POST` | `/api/delete` `{ "path": "..." }` | Deleta arquivos da pasta |
+| `GET`  | `/api/suggestions` | Discos do sistema (uso por volume) + OneDrive detectado |
+| `GET`  | `/api/free-space?path=<caminho>` | **SSE** — libera espaço (somente-nuvem) com progresso ao vivo |
+| `GET`  | `/api/delete?path=<caminho>` | **SSE** — deleta arquivos da pasta com progresso ao vivo |
+
+> `/api/free-space` e `/api/delete` retornam um stream **Server-Sent Events** (`text/event-stream`),
+> emitindo eventos `{ phase: 'start'|'progress'|'done'|'error', current, total, currentFile, ... }`.
+> Fechar a conexão (`EventSource.close()`) cancela a operação no servidor.
 
 ---
 
@@ -141,13 +145,13 @@ O backend expõe endpoints simples em `http://localhost:8080`:
 
 Veja todas as mudanças em [`changelog.md`](changelog.md).
 
-Resumo da **v0.8.3**:
+Resumo da **v1.0.0**:
 
+- ✅ Barra de progresso em tempo real (SSE) com ETA e cancelar
+- ✅ Dashboard de discos com uso por volume e OneDrive detectado
+- ✅ Liberar espaço via API nativa Win32 (`SetFileAttributesW`)
 - ✅ Interface HTML visual (tema escuro Valebrum, responsiva)
-- ✅ Backend PowerShell com servidor HTTP local (`HttpListener`)
 - ✅ Drill-down, breadcrumb e ordenação por coluna
-- ✅ Liberar espaço / deletar com confirmação
-- ✅ Auto-detecção de caminhos OneDrive
 
 ---
 
