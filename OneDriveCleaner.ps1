@@ -174,20 +174,71 @@ function Invoke-Deletar {
     }
 }
 
-# Sugere caminhos OneDrive comuns existentes na máquina.
-function Get-SugestoesOneDrive {
+# Detecta caminhos OneDrive existentes na máquina (variáveis de ambiente + varredura).
+# $Roots: raízes adicionais (ex.: raízes de cada drive) onde procurar pastas "OneDrive*".
+function Get-CaminhosOneDrive {
+    param([string[]]$Roots = @())
     $cands = @()
     foreach ($e in @('OneDrive', 'OneDriveConsumer', 'OneDriveCommercial')) {
         $v = [Environment]::GetEnvironmentVariable($e)
         if ($v) { $cands += $v }
     }
     $cands += (Join-Path $env:USERPROFILE 'OneDrive')
-    # Pastas OneDrive corporativas: "OneDrive - Empresa"
-    Get-ChildItem -LiteralPath $env:USERPROFILE -Directory -Force -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like 'OneDrive*' } |
-        ForEach-Object { $cands += $_.FullName }
+
+    # Procura pastas "OneDrive*" no perfil do usuário e na raiz de cada drive informado.
+    $searchRoots = @($env:USERPROFILE) + $Roots
+    foreach ($r in ($searchRoots | Where-Object { $_ } | Select-Object -Unique)) {
+        Get-ChildItem -LiteralPath $r -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like 'OneDrive*' } |
+            ForEach-Object { $cands += $_.FullName }
+    }
 
     return @($cands | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+}
+
+# Varre todos os discos do sistema de arquivos e retorna métricas + OneDrive detectado.
+function Get-DiscosDoSistema {
+    $drives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+              Where-Object { $_.Free -ne $null -or $_.Used -ne $null }
+
+    $allOneDrive = Get-CaminhosOneDrive -Roots @($drives | ForEach-Object { $_.Root })
+
+    $disks = foreach ($d in $drives) {
+        $free  = [int64]($d.Free)
+        $used  = [int64]($d.Used)
+        $total = $free + $used
+        if ($total -le 0) { continue }
+
+        # Volume label via WMI/CIM (best-effort)
+        $label = $null
+        try {
+            $vol = Get-CimInstance Win32_LogicalDisk -Filter ("DeviceID='{0}'" -f ($d.Name + ':')) -ErrorAction SilentlyContinue
+            if ($vol) { $label = $vol.VolumeName }
+        } catch {}
+
+        # Caminhos OneDrive que vivem neste drive
+        $odHere = @($allOneDrive | Where-Object { $_ -like ($d.Name + ':*') })
+
+        [PSCustomObject]@{
+            letter        = $d.Name + ':'
+            root          = $d.Root
+            label         = if ($label) { $label } else { '' }
+            totalBytes    = $total
+            usedBytes     = $used
+            freeBytes     = $free
+            usedFormatted = Format-Tamanho $used
+            freeFormatted = Format-Tamanho $free
+            totalFormatted= Format-Tamanho $total
+            usedPercent   = [math]::Round(($used / $total) * 100, 1)
+            oneDrivePaths = $odHere
+            hasOneDrive   = ($odHere.Count -gt 0)
+        }
+    }
+
+    return [PSCustomObject]@{
+        disks         = @($disks)
+        oneDrivePaths = $allOneDrive
+    }
 }
 
 # ================================================================
@@ -282,7 +333,8 @@ function Start-OneDriveCleaner {
                     }
 
                     '^/api/suggestions$' {
-                        Send-Json -Response $response -Object @{ paths = (Get-SugestoesOneDrive) }
+                        $info = Get-DiscosDoSistema
+                        Send-Json -Response $response -Object @{ disks = $info.disks; paths = $info.oneDrivePaths }
                         break
                     }
 
