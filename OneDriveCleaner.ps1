@@ -1,8 +1,8 @@
 # OneDriveCleaner - Analisador e Otimizador de Pastas OneDrive
 # Idealizador: Nelson Brum
 # Desenvolvedor: Claude + Nelson
-# Versão: 0.8.3
-# Data: 2026-05-31
+# Versão: 1.0.0
+# Data: 2026-06-01
 #
 # O que faz:
 #   Analisa pastas (OneDrive-friendly), comparando tamanho LÓGICO (total na nuvem)
@@ -26,6 +26,17 @@ $ErrorActionPreference = 'Stop'
 $script:Port    = 8080
 $script:Prefix  = "http://localhost:$($script:Port)/"
 $script:Root    = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+# API nativa Win32 para definir atributos de nuvem (UNPINNED/PINNED), que o enum
+# [System.IO.FileAttributes] do .NET rejeita. É exatamente o que o attrib.exe faz.
+if (-not ('Win32.NativeFs' -as [type])) {
+    Add-Type -Namespace Win32 -Name NativeFs -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern bool SetFileAttributesW(string lpFileName, uint dwFileAttributes);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern uint GetFileAttributesW(string lpFileName);
+'@
+}
 
 # ================================================================
 # FUNÇÕES DE FORMATAÇÃO (preservadas do script original)
@@ -125,53 +136,112 @@ function Get-AnaliseDePasta {
     }
 }
 
-# Libera espaço local (OneDrive): torna arquivos somente-nuvem (attrib +U -P), sem excluir da nuvem.
-function Invoke-LiberarEspaco {
-    param([Parameter(Mandatory)][string]$Caminho)
+# Atributos de nuvem do Windows (Files On-Demand). Definir UNPINNED equivale a "attrib +U".
+$script:FILE_ATTRIBUTE_PINNED   = 0x00080000
+$script:FILE_ATTRIBUTE_UNPINNED = 0x00100000
 
-    if (-not (Test-Path -LiteralPath $Caminho)) { throw "Caminho inválido: $Caminho" }
+# Versão com PROGRESSO (SSE) da liberação de espaço. Processa arquivo a arquivo,
+# emitindo eventos de progresso via Send-SseData. Se o cliente desconectar
+# (cancelamento), Send-SseData retorna $false e interrompemos o processamento.
+function Invoke-LiberarEspacoStream {
+    param(
+        [Parameter(Mandatory)]$Response,
+        [Parameter(Mandatory)][string]$Caminho
+    )
 
-    $localFiles = Get-ChildItem -LiteralPath $Caminho -Recurse -File -Force -ErrorAction SilentlyContinue |
-                  Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::Offline) }
-
-    $qtd = ($localFiles | Measure-Object).Count
-    $bytes = ($localFiles | Measure-Object -Property Length -Sum).Sum
-    if (-not $bytes) { $bytes = 0 }
-
-    if ($qtd -eq 0) {
-        return [PSCustomObject]@{ ok = $true; freedFiles = 0; freedBytes = 0; message = "Nenhum arquivo local para liberar." }
+    if (-not (Test-Path -LiteralPath $Caminho)) {
+        Send-SseData -Response $Response -Object @{ phase = 'error'; message = "Caminho inválido: $Caminho" } | Out-Null
+        return
     }
 
-    & attrib.exe +U -P "$Caminho\*" /s /d 2>$null
+    $localFiles = @(Get-ChildItem -LiteralPath $Caminho -Recurse -File -Force -ErrorAction SilentlyContinue |
+                    Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::Offline) })
+    $total = $localFiles.Count
+    $bytesTotal = ($localFiles | Measure-Object -Property Length -Sum).Sum; if (-not $bytesTotal) { $bytesTotal = 0 }
 
-    return [PSCustomObject]@{
-        ok             = $true
-        freedFiles     = $qtd
-        freedBytes     = [int64]$bytes
-        freedFormatted = Format-Tamanho $bytes
-        message        = ("Convertidos para somente-nuvem: {0} arquivo(s). Estimativa liberada: {1}." -f (Format-Numero $qtd), (Format-Tamanho $bytes))
+    if (-not (Send-SseData -Response $Response -Object @{ phase = 'start'; current = 0; total = $total; totalBytes = [int64]$bytesTotal })) { return }
+
+    if ($total -eq 0) {
+        Send-SseData -Response $Response -Object @{ phase = 'done'; current = 0; total = 0; freedFiles = 0; freedBytes = 0; freedFormatted = (Format-Tamanho 0); message = 'Nenhum arquivo local para liberar.' } | Out-Null
+        return
     }
+
+    $current = 0; $freedBytes = 0
+    $step = [Math]::Max(1, [Math]::Floor($total / 200))
+
+    $INVALID = [uint32]'0xFFFFFFFF'
+    foreach ($f in $localFiles) {
+        try {
+            $cur = [Win32.NativeFs]::GetFileAttributesW($f.FullName)
+            if ($cur -ne $INVALID) {
+                # +U (somente-nuvem) e -P (despinar), preservando os demais atributos.
+                $new = ([uint64]$cur -bor $script:FILE_ATTRIBUTE_UNPINNED) -band (0xFFFFFFFF -bxor $script:FILE_ATTRIBUTE_PINNED)
+                if ([Win32.NativeFs]::SetFileAttributesW($f.FullName, [uint32]$new)) {
+                    $freedBytes += $f.Length
+                }
+            }
+        } catch { }
+        $current++
+
+        if ($current % $step -eq 0 -or $current -eq $total) {
+            $ok = Send-SseData -Response $Response -Object @{ phase = 'progress'; current = $current; total = $total; currentFile = $f.Name; freedBytes = [int64]$freedBytes }
+            if (-not $ok) { return }  # cliente cancelou
+        }
+    }
+
+    Send-SseData -Response $Response -Object @{
+        phase          = 'done'
+        current        = $current
+        total          = $total
+        freedFiles     = $current
+        freedBytes     = [int64]$freedBytes
+        freedFormatted = (Format-Tamanho $freedBytes)
+        message        = ("Convertidos para somente-nuvem: {0} arquivo(s). Estimativa liberada: {1}." -f (Format-Numero $current), (Format-Tamanho $freedBytes))
+    } | Out-Null
 }
 
-# Deleta definitivamente os arquivos de uma pasta (reflete na nuvem se sincronizado).
-function Invoke-Deletar {
-    param([Parameter(Mandatory)][string]$Caminho)
+# Versão com PROGRESSO (SSE) da exclusão. Deleta arquivo a arquivo emitindo progresso.
+function Invoke-DeletarStream {
+    param(
+        [Parameter(Mandatory)]$Response,
+        [Parameter(Mandatory)][string]$Caminho
+    )
 
-    if (-not (Test-Path -LiteralPath $Caminho)) { throw "Caminho inválido: $Caminho" }
-
-    $files = Get-ChildItem -LiteralPath $Caminho -Recurse -File -Force -ErrorAction SilentlyContinue
-    $count = ($files | Measure-Object).Count
-    if ($count -eq 0) {
-        return [PSCustomObject]@{ ok = $true; deletedFiles = 0; message = "Nada a excluir." }
+    if (-not (Test-Path -LiteralPath $Caminho)) {
+        Send-SseData -Response $Response -Object @{ phase = 'error'; message = "Caminho inválido: $Caminho" } | Out-Null
+        return
     }
 
-    $files | Remove-Item -Force -ErrorAction Stop
+    $files = @(Get-ChildItem -LiteralPath $Caminho -Recurse -File -Force -ErrorAction SilentlyContinue)
+    $total = $files.Count
 
-    return [PSCustomObject]@{
-        ok           = $true
-        deletedFiles = $count
-        message      = ("Excluídos {0} arquivo(s) em: {1}" -f (Format-Numero $count), $Caminho)
+    if (-not (Send-SseData -Response $Response -Object @{ phase = 'start'; current = 0; total = $total })) { return }
+
+    if ($total -eq 0) {
+        Send-SseData -Response $Response -Object @{ phase = 'done'; current = 0; total = 0; deletedFiles = 0; message = 'Nada a excluir.' } | Out-Null
+        return
     }
+
+    $current = 0
+    $step = [Math]::Max(1, [Math]::Floor($total / 200))
+
+    foreach ($f in $files) {
+        try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop } catch { }
+        $current++
+
+        if ($current % $step -eq 0 -or $current -eq $total) {
+            $ok = Send-SseData -Response $Response -Object @{ phase = 'progress'; current = $current; total = $total; currentFile = $f.Name }
+            if (-not $ok) { return }  # cliente cancelou
+        }
+    }
+
+    Send-SseData -Response $Response -Object @{
+        phase        = 'done'
+        current      = $current
+        total        = $total
+        deletedFiles = $current
+        message      = ("Excluídos {0} arquivo(s) em: {1}" -f (Format-Numero $current), $Caminho)
+    } | Out-Null
 }
 
 # Detecta caminhos OneDrive existentes na máquina (variáveis de ambiente + varredura).
@@ -266,6 +336,32 @@ function Send-Html {
     $Response.OutputStream.Close()
 }
 
+# Prepara a resposta para Server-Sent Events (stream chunked, sem buffer).
+function Start-Sse {
+    param($Response)
+    $Response.StatusCode = 200
+    $Response.ContentType = 'text/event-stream; charset=utf-8'
+    $Response.Headers.Add('Cache-Control', 'no-cache')
+    $Response.Headers.Add('X-Accel-Buffering', 'no')
+    $Response.SendChunked = $true
+    $Response.KeepAlive = $true
+}
+
+# Envia um evento SSE (data: <json>\n\n). Retorna $false se o cliente desconectou.
+function Send-SseData {
+    param($Response, $Object)
+    try {
+        $json = $Object | ConvertTo-Json -Depth 6 -Compress
+        $payload = "data: $json`n`n"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+        $Response.OutputStream.Write($bytes, 0, $bytes.Length)
+        $Response.OutputStream.Flush()
+        return $true
+    } catch {
+        return $false  # conexão fechada pelo cliente (cancelamento)
+    }
+}
+
 function Read-Body {
     param($Request)
     if (-not $Request.HasEntityBody) { return $null }
@@ -297,7 +393,7 @@ function Start-OneDriveCleaner {
     }
 
     Write-Host "=================================================" -ForegroundColor Cyan
-    Write-Host "  OneDriveCleaner v0.8.3" -ForegroundColor Cyan
+    Write-Host "  OneDriveCleaner v1.0.0" -ForegroundColor Cyan
     Write-Host "  Analisador e Otimizador de Pastas OneDrive" -ForegroundColor Cyan
     Write-Host "=================================================" -ForegroundColor Cyan
     Write-Host "Servidor rodando em: $($script:Prefix)" -ForegroundColor Green
@@ -361,30 +457,24 @@ function Start-OneDriveCleaner {
                     }
 
                     '^/api/free-space$' {
-                        if ($method -ne 'POST') { $status = 405; Send-Json -Response $response -Object @{ error = 'use POST' } -Status 405; break }
-                        $body = Read-Body -Request $request
-                        if (-not $body -or -not $body.path) { $status = 400; Send-Json -Response $response -Object @{ error = 'body {path} ausente' } -Status 400; break }
-                        try {
-                            $result = Invoke-LiberarEspaco -Caminho $body.path
-                            Send-Json -Response $response -Object $result
-                        } catch {
-                            $status = 500
-                            Send-Json -Response $response -Object @{ ok = $false; error = $_.Exception.Message } -Status 500
-                        }
+                        # Stream de progresso via SSE (consumido por EventSource → GET).
+                        $p = $request.QueryString['path']
+                        if (-not $p) { $status = 400; Send-Json -Response $response -Object @{ error = 'parâmetro path ausente' } -Status 400; break }
+                        Start-Sse -Response $response
+                        try { Invoke-LiberarEspacoStream -Response $response -Caminho $p }
+                        catch { Send-SseData -Response $response -Object @{ phase = 'error'; message = $_.Exception.Message } | Out-Null }
+                        finally { try { $response.OutputStream.Close() } catch {} }
                         break
                     }
 
                     '^/api/delete$' {
-                        if ($method -ne 'POST') { $status = 405; Send-Json -Response $response -Object @{ error = 'use POST' } -Status 405; break }
-                        $body = Read-Body -Request $request
-                        if (-not $body -or -not $body.path) { $status = 400; Send-Json -Response $response -Object @{ error = 'body {path} ausente' } -Status 400; break }
-                        try {
-                            $result = Invoke-Deletar -Caminho $body.path
-                            Send-Json -Response $response -Object $result
-                        } catch {
-                            $status = 500
-                            Send-Json -Response $response -Object @{ ok = $false; error = $_.Exception.Message } -Status 500
-                        }
+                        # Stream de progresso via SSE (consumido por EventSource → GET).
+                        $p = $request.QueryString['path']
+                        if (-not $p) { $status = 400; Send-Json -Response $response -Object @{ error = 'parâmetro path ausente' } -Status 400; break }
+                        Start-Sse -Response $response
+                        try { Invoke-DeletarStream -Response $response -Caminho $p }
+                        catch { Send-SseData -Response $response -Object @{ phase = 'error'; message = $_.Exception.Message } | Out-Null }
+                        finally { try { $response.OutputStream.Close() } catch {} }
                         break
                     }
 
