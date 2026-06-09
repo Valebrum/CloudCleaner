@@ -1,4 +1,4 @@
-# OneDriveCleaner - Analisador e Otimizador de Pastas OneDrive
+# CloudCleaner - Analisador e Otimizador de Pastas OneDrive
 # Idealizador: Nelson Brum
 # Desenvolvedor: Claude + Nelson
 # Versão: 1.0.0
@@ -12,7 +12,7 @@
 # Arquitetura: backend PowerShell (HttpListener em localhost:8080) + interface HTML.
 #
 # Execução sugerida:
-#   powershell -ExecutionPolicy Bypass -File .\OneDriveCleaner.ps1
+#   powershell -ExecutionPolicy Bypass -File .\CloudCleaner.ps1
 #
 # Observação: roda em Windows PowerShell 5.x ou PowerShell 7+ (Windows).
 #             Requer permissão para escutar em http://localhost:8080.
@@ -379,7 +379,7 @@ function Write-Log {
     Write-Host ("[{0}] {1,-5} {2} -> {3}" -f $ts, $Method, $Path, $Status) -ForegroundColor $color
 }
 
-function Start-OneDriveCleaner {
+function Start-CloudCleaner {
     $listener = New-Object System.Net.HttpListener
     $listener.Prefixes.Add($script:Prefix)
 
@@ -393,7 +393,7 @@ function Start-OneDriveCleaner {
     }
 
     Write-Host "=================================================" -ForegroundColor Cyan
-    Write-Host "  OneDriveCleaner v1.0.0" -ForegroundColor Cyan
+    Write-Host "  CloudCleaner v1.0.0" -ForegroundColor Cyan
     Write-Host "  Analisador e Otimizador de Pastas OneDrive" -ForegroundColor Cyan
     Write-Host "=================================================" -ForegroundColor Cyan
     Write-Host "Servidor rodando em: $($script:Prefix)" -ForegroundColor Green
@@ -498,4 +498,4 @@ function Start-OneDriveCleaner {
 }
 
 # ===== INÍCIO =====
-Start-OneDriveCleaner
+Start-CloudCleaner

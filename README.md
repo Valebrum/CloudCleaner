@@ -1,11 +1,11 @@
-# ![OneDriveCleaner](https://img.shields.io/badge/Valebrum-OneDriveCleaner-blue) OneDriveCleaner — Analisador e Otimizador de Pastas OneDrive
+# ![CloudCleaner](https://img.shields.io/badge/Valebrum-CloudCleaner-blue) CloudCleaner — Analisador e Otimizador de Pastas OneDrive
 
 ![Versão](https://img.shields.io/badge/vers%C3%A3o-1.0.0-success)
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.x%20%7C%207%2B-5391FE?logo=powershell&logoColor=white)
 ![Plataforma](https://img.shields.io/badge/plataforma-Windows-0078D6?logo=windows&logoColor=white)
 ![Licença](https://img.shields.io/badge/licen%C3%A7a-Propriet%C3%A1ria%20Valebrum%20v1.1-red)
 
-**OneDriveCleaner** é um **analisador e otimizador de pastas OneDrive** com backend em PowerShell e uma **interface HTML visual**. Ele mostra, lado a lado, o **tamanho lógico** (total na nuvem) e o **tamanho local** (o que realmente ocupa o disco), e permite **liberar espaço** (tornar arquivos somente-nuvem) ou **deletar** — tudo com poucos cliques.
+**CloudCleaner** é um **analisador e otimizador de pastas OneDrive** com backend em PowerShell e uma **interface HTML visual**. Ele mostra, lado a lado, o **tamanho lógico** (total na nuvem) e o **tamanho local** (o que realmente ocupa o disco), e permite **liberar espaço** (tornar arquivos somente-nuvem) ou **deletar** — tudo com poucos cliques.
 
 > Migrado do script `tamanhosNasPastas0.83.ps1` para um projeto público com interface gráfica web.
 
@@ -49,9 +49,9 @@
 
 ## 🗂 Estrutura do Projeto
 
-| OneDriveCleaner/ | |
+| CloudCleaner/ | |
 |------------------|-|
-| `OneDriveCleaner.ps1` | Backend PowerShell: análise + servidor HTTP local |
+| `CloudCleaner.ps1` | Backend PowerShell: análise + servidor HTTP local |
 | `index.html`          | Interface visual (HTML/CSS/JS vanilla) |
 | `README.md`           | Documentação e instruções do projeto |
 | `changelog.md`        | Histórico de versões |
@@ -66,8 +66,8 @@
 ### 1. Clonar o repositório
 
 ```bash
-git clone https://github.com/Valebrum/OneDriveCleaner.git
-cd OneDriveCleaner
+git clone https://github.com/Valebrum/CloudCleaner.git
+cd CloudCleaner
 ```
 
 ### 2. Permitir execução de scripts (uma vez)
@@ -78,10 +78,10 @@ No PowerShell:
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-### 3. Executar o OneDriveCleaner
+### 3. Executar o CloudCleaner
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\OneDriveCleaner.ps1
+powershell -ExecutionPolicy Bypass -File .\CloudCleaner.ps1
 ```
 
 O script inicia um servidor local e **abre o navegador automaticamente** em `http://localhost:8080`.
