@@ -1,11 +1,13 @@
-# ![CloudCleaner](https://img.shields.io/badge/Valebrum-CloudCleaner-blue) CloudCleaner — Analisador e Otimizador de Pastas OneDrive
+# ![CloudCleaner](https://img.shields.io/badge/Valebrum-CloudCleaner-blue) CloudCleaner — Analisador e Otimizador de Pastas OneDrive e Google Drive
 
-![Versão](https://img.shields.io/badge/vers%C3%A3o-1.0.0-success)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-1.0.1-success)
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.x%20%7C%207%2B-5391FE?logo=powershell&logoColor=white)
 ![Plataforma](https://img.shields.io/badge/plataforma-Windows-0078D6?logo=windows&logoColor=white)
 ![Licença](https://img.shields.io/badge/licen%C3%A7a-Propriet%C3%A1ria%20Valebrum%20v1.1-red)
 
 **CloudCleaner** é um **analisador e otimizador de pastas OneDrive** com backend em PowerShell e uma **interface HTML visual**. Ele mostra, lado a lado, o **tamanho lógico** (total na nuvem) e o **tamanho local** (o que realmente ocupa o disco), e permite **liberar espaço** (tornar arquivos somente-nuvem) ou **deletar** — tudo com poucos cliques.
+
+A partir da **v1.0.1**, o CloudCleaner também **detecta o Google Drive for Desktop** (modos **Stream** e **Espelho/Mirror**), mede o cache local do Stream e impede ações que não fariam efeito nesse provedor. Veja [OneDrive vs. Google Drive](#-onedrive-vs-google-drive-mirror-vs-stream).
 
 > Migrado do script `tamanhosNasPastas0.83.ps1` para um projeto público com interface gráfica web.
 
@@ -53,6 +55,7 @@
 |------------------|-|
 | `CloudCleaner.ps1` | Backend PowerShell: análise + servidor HTTP local |
 | `index.html`          | Interface visual (HTML/CSS/JS vanilla) |
+| `tests/Run-Tests.ps1` | Testes (sem dependência de Pester) das funções puras |
 | `README.md`           | Documentação e instruções do projeto |
 | `changelog.md`        | Histórico de versões |
 | `LICENSE.md`          | Licença Proprietária Valebrum v1.1 |
@@ -112,6 +115,32 @@ O OneDrive (Files On-Demand) mantém arquivos *somente-nuvem* que **não ocupam 
 **☁️ Liberar** = `attrib +U -P` → mantém na nuvem, libera o disco.
 **🗑️ Deletar** = remove o arquivo → some do disco **e** da nuvem (se sincronizado).
 
+> ⚠️ O mecanismo de **Liberar** acima vale para o **OneDrive** (e qualquer provedor que use a *Cloud Files API* do Windows). **Não** vale para o Google Drive — veja abaixo.
+
+---
+
+## ☁️ OneDrive vs. Google Drive (Mirror vs Stream)
+
+O **OneDrive** usa a **Cloud Files API do Windows** (driver *Cloud Files Filter*, `cldflt`): arquivos só-na-nuvem são *placeholders* NTFS com o atributo `Offline`, e dá pra liberar/fixar com `attrib +U`/`+P`. É nisso que o CloudCleaner se apoia.
+
+O **Google Drive for Desktop** funciona **de forma diferente** e tem **dois modos**:
+
+| | **Stream** (padrão) | **Espelho / Mirror** |
+|--|--|--|
+| Onde ficam os arquivos | Volume **virtual FAT32** (rótulo `Google Drive`, ex.: `G:`/`E:`), só-na-nuvem por padrão | Pasta **local real (NTFS)**, sempre baixada |
+| Atributo `Offline` (Cloud Files API) | **Não existe** — FAT32 não suporta; tudo aparece como `Normal` com **tamanho lógico** | N/A (arquivos reais) |
+| `attrib +U` libera espaço? | **Não** (no-op) | **Não** (arquivo é real) |
+| Footprint local de verdade | `content_cache` em `%LOCALAPPDATA%\Google\DriveFS\<conta>\content_cache` | Tamanho total dos arquivos no disco |
+| Como recuperar espaço | App do Google Drive (somente-nuvem) / limpar cache | Deletar ou trocar a pasta para **Stream** |
+
+**O que o CloudCleaner faz com o Google Drive:**
+
+- **Detecta** o provedor por **assinatura de volume** (`VolumeName = "Google Drive"`), o que independe do idioma — funciona com `Meu Drive` ou `My Drive`.
+- **Mede** o `content_cache` (o espaço local real que o Stream ocupa) e mostra no dashboard.
+- **Bloqueia** a "Liberar espaço" em caminhos do Google Drive (Stream ou Mirror), porque seria um no-op que **reportaria espaço liberado falso**. A UI desabilita os botões e exibe um aviso explicativo; **Deletar** continua disponível.
+
+> Por que não há um botão "limpar cache do Stream"? Apagar `content_cache` com o DriveFS rodando pode corromper o estado. A limpeza segura (parar o DriveFS → limpar → reiniciar) ficou como follow-up; por ora a ferramenta mede e orienta.
+
 ---
 
 ## 🔌 API local (para integração)
@@ -120,15 +149,27 @@ O backend expõe endpoints simples em `http://localhost:8080`:
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
-| `GET`  | `/api/scan?path=<caminho>` | Subpastas com tamanhos lógico/local e totais |
+| `GET`  | `/api/scan?path=<caminho>` | Subpastas com tamanhos lógico/local, totais e bloco `cloud` (`provider`, `mode`, `freeable`, `note`) |
 | `GET`  | `/api/disk-free?path=<caminho>` | Espaço livre/usado do volume |
-| `GET`  | `/api/suggestions` | Discos do sistema (uso por volume) + OneDrive detectado |
-| `GET`  | `/api/free-space?path=<caminho>` | **SSE** — libera espaço (somente-nuvem) com progresso ao vivo |
+| `GET`  | `/api/suggestions` | Discos do sistema (uso por volume) + OneDrive e **Google Drive** detectados (bloco `googleDrive` com tamanho do `content_cache`) |
+| `GET`  | `/api/free-space?path=<caminho>` | **SSE** — libera espaço (somente-nuvem) com progresso ao vivo. **Recusa** caminhos do Google Drive (`phase: 'error'` com explicação) |
 | `GET`  | `/api/delete?path=<caminho>` | **SSE** — deleta arquivos da pasta com progresso ao vivo |
 
 > `/api/free-space` e `/api/delete` retornam um stream **Server-Sent Events** (`text/event-stream`),
 > emitindo eventos `{ phase: 'start'|'progress'|'done'|'error', current, total, currentFile, ... }`.
 > Fechar a conexão (`EventSource.close()`) cancela a operação no servidor.
+
+---
+
+## 🧪 Testes
+
+Os testes não dependem de Pester (rodam em PowerShell 5.x ou 7+). Eles fazem *dot-source* do script com `-NoServe` (carrega só as funções, sem subir o servidor) e validam as funções puras:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1
+```
+
+Saída esperada: `Resultado: 21 passou, 0 falhou.` (código de saída `0`). Também imprime, de forma informativa, se há Google Drive instalado e o tamanho do `content_cache` detectado na máquina.
 
 ---
 
@@ -144,6 +185,13 @@ O backend expõe endpoints simples em `http://localhost:8080`:
 ## 📜 Changelog
 
 Veja todas as mudanças em [`changelog.md`](changelog.md).
+
+Resumo da **v1.0.1**:
+
+- ✅ Detecção de **Google Drive for Desktop** (Stream e Espelho) por assinatura de volume
+- ✅ Medição do `content_cache` (footprint local real do modo Stream)
+- ✅ Guarda contra "liberar espaço" enganoso em caminhos do Google Drive (corrige super-reporte de bytes)
+- ✅ Testes sem dependência de Pester (`tests/Run-Tests.ps1`) e switch `-NoBrowser`
 
 Resumo da **v1.0.0**:
 
