@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CloudCleaner — Analisador de Pastas OneDrive</title>
+<title>CloudCleaner — Analisador de Pastas OneDrive e Google Drive</title>
 <style>
   :root {
     --bg:        #0F1A30;
@@ -117,6 +117,21 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .disk-card .dc-path:hover { border-color: var(--cloud); }
+  .disk-card.has-gd { border-color: var(--green); }
+  .disk-card .dc-badges { position: absolute; top: 10px; right: 10px; display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 72%; }
+  .disk-card .dc-badge { font-size: 11px; padding: 1px 7px; border-radius: 20px; white-space: nowrap; }
+  .disk-card .dc-badge.od { color: var(--cloud); background: rgba(90,169,230,.12); border: 1px solid rgba(90,169,230,.4); }
+  .disk-card .dc-badge.gd { color: var(--green); background: rgba(54,179,126,.12); border: 1px solid rgba(54,179,126,.4); }
+  .disk-card .dc-path.gd { color: var(--green); }
+  .disk-card .dc-path.gd:hover { border-color: var(--green); }
+  .dc-path .mode-tag { font-size: 10px; opacity: .7; text-transform: uppercase; letter-spacing: .3px; margin-left: 4px; }
+
+  /* ---- cloud note (Google Drive: liberação por atributo não se aplica) ---- */
+  .cloud-note { margin-top: 14px; padding: 12px 14px; border-radius: 10px; font-size: 13px; line-height: 1.55;
+    background: rgba(245,166,35,.08); border: 1px solid rgba(245,166,35,.35); color: var(--text); }
+  .cloud-note b { color: var(--yellow); }
+  .cloud-note.stream { background: rgba(54,179,126,.08); border-color: rgba(54,179,126,.35); }
+  .cloud-note.stream b { color: var(--green); }
 
   /* ---- breadcrumb ---- */
   .crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 13px; margin-top: 4px; }
@@ -227,9 +242,9 @@
     <div style="flex:1">
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <h1>CloudCleaner</h1>
-        <span class="ver">v1.0.0</span>
+        <span class="ver">v1.0.1</span>
       </div>
-      <p class="sub">Visualize tamanho lógico vs. local e libere espaço do OneDrive com um clique.</p>
+      <p class="sub">Visualize tamanho lógico vs. local e libere espaço do OneDrive com um clique. Detecta também Google Drive (Stream/Espelho).</p>
     </div>
   </header>
 
@@ -248,6 +263,7 @@
   <div class="card" id="summaryCard" style="display:none">
     <div class="summary" id="summaryStats"></div>
     <div class="disk-bar-wrap" id="diskBarWrap"></div>
+    <div class="cloud-note" id="cloudNote" style="display:none"></div>
   </div>
 
   <!-- Table -->
@@ -276,7 +292,7 @@
   </div>
 
   <footer>
-    CloudCleaner v1.0.0 — Idealizador: Nelson Brum · Desenvolvido por Claude + Nelson ·
+    CloudCleaner v1.0.1 — Idealizador: Nelson Brum · Desenvolvido por Claude + Nelson ·
     <a href="https://github.com/Valebrum/CloudCleaner" target="_blank">GitHub</a><br>
     © 2026 Grupo Valebrum — Licença Proprietária v1.1
   </footer>
@@ -317,6 +333,7 @@
 <script>
 const API = '';
 let currentData = null;
+let gdriveInfo = null; // bloco googleDrive de /api/suggestions (cache local etc.)
 let sortKey = 'logicalBytes';
 let sortDir = -1; // -1 desc, 1 asc
 
@@ -331,6 +348,9 @@ function fmtBytes(b) {
   return b + ' B';
 }
 function fmtNum(n) { return new Intl.NumberFormat('pt-BR').format(n); }
+// PowerShell ConvertTo-Json (PS 5.x) desempacota arrays de 1 elemento em objeto.
+// Normaliza para sempre tratarmos como lista.
+function asArray(x) { return Array.isArray(x) ? x : (x == null ? [] : [x]); }
 
 function toast(msg, type = '') {
   const t = document.createElement('div');
@@ -403,13 +423,26 @@ function renderCrumbs(path) {
 function renderSummary(data) {
   const t = data.totals;
   const d = data.disk;
+  const cloud = data.cloud || { freeable: true, provider: 'none', mode: '' };
   const savable = t.logicalBytes - t.localBytes;
+
+  let savableStat;
+  if (cloud.freeable === false) {
+    // Google Drive (Stream/Mirror): liberação por atributo não se aplica.
+    savableStat = `<div class="stat"><div class="k">Liberável por atributo</div><div class="v" style="color:var(--yellow)" title="Não se aplica ao Google Drive">N/D</div></div>`;
+  } else {
+    savableStat = `<div class="stat"><div class="k">Liberável (☁️ só-na-nuvem)</div><div class="v" style="color:var(--cloud)">${fmtBytes(savable > 0 ? savable : t.localBytes)}</div></div>`;
+  }
+
   $('summaryStats').innerHTML = `
     <div class="stat"><div class="k">Espaço livre no disco ${d ? d.Drive : ''}</div><div class="v">${d ? fmtBytes(d.FreeBytes) : '—'}</div></div>
     <div class="stat"><div class="k">Tamanho lógico (nuvem)</div><div class="v">${fmtBytes(t.logicalBytes)} <small>${fmtNum(t.files)} arq.</small></div></div>
     <div class="stat"><div class="k">Ocupado no disco (local)</div><div class="v">${fmtBytes(t.localBytes)} <small>${t.localPercent}%</small></div></div>
-    <div class="stat"><div class="k">Liberável (☁️ só-na-nuvem)</div><div class="v" style="color:var(--cloud)">${fmtBytes(savable > 0 ? savable : t.localBytes)}</div></div>
+    ${savableStat}
   `;
+
+  renderCloudNote(cloud);
+
   if (d && d.TotalBytes > 0) {
     const usedPct = Math.min(100, (d.UsedBytes / d.TotalBytes) * 100);
     $('diskBarWrap').innerHTML = `
@@ -419,6 +452,21 @@ function renderSummary(data) {
     $('diskBarWrap').innerHTML = '';
   }
   $('summaryCard').style.display = '';
+}
+
+// Banner explicativo quando o caminho é Google Drive (liberação por atributo não se aplica).
+function renderCloudNote(cloud) {
+  const el = $('cloudNote');
+  if (!cloud || cloud.freeable !== false) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const isStream = cloud.mode === 'stream';
+  el.className = 'cloud-note' + (isStream ? ' stream' : '');
+  let extra = '';
+  if (isStream && gdriveInfo && gdriveInfo.cacheFormatted) {
+    extra = ` O que ocupa disco de verdade é o cache local do Stream: <b>${escapeHtml(gdriveInfo.cacheFormatted)}</b>.`;
+  }
+  const title = isStream ? '☁️ Google Drive — modo Stream' : '☁️ Google Drive — modo Espelho (Mirror)';
+  el.innerHTML = `<b>${title}.</b> ${escapeHtml(cloud.note || '')}${extra} A ação <b>☁️ Liberar</b> foi desativada nesta pasta porque não teria efeito (e reportaria espaço falso). A ação <b>🗑️ Deletar</b> continua disponível.`;
+  el.style.display = '';
 }
 
 // ---------- render table ----------
@@ -439,6 +487,7 @@ function renderTable() {
   body.innerHTML = '';
   const folders = sortedFolders();
   const maxLogical = Math.max(1, ...currentData.subfolders.map(f => f.logicalBytes));
+  const freeable = !currentData.cloud || currentData.cloud.freeable !== false;
 
   if (folders.length === 0) {
     $('emptyMsg').style.display = '';
@@ -469,10 +518,18 @@ function renderTable() {
     const [bAnalyze, bFree, bDelete] = tr.querySelectorAll('.row-actions button');
     tr.querySelector('.name').addEventListener('click', () => scan(f.path));
     bAnalyze.addEventListener('click', () => scan(f.path));
-    bFree.addEventListener('click', () => freeSpace(f));
+    if (freeable) {
+      bFree.addEventListener('click', () => freeSpace(f));
+    } else {
+      bFree.disabled = true;
+      bFree.title = 'Liberação por atributo não se aplica ao Google Drive';
+    }
     bDelete.addEventListener('click', () => deleteFolder(f));
     body.appendChild(tr);
   });
+  $('freeAllBtn').disabled = !freeable;
+  $('freeAllBtn').title = freeable ? 'Liberar espaço local de todas as subpastas'
+                                   : 'Liberação por atributo não se aplica ao Google Drive';
   $('tableCard').style.display = '';
 }
 
@@ -625,6 +682,10 @@ async function deleteFolder(f) {
 
 async function freeAll() {
   if (!currentData || !currentData.subfolders.length) return;
+  if (currentData.cloud && currentData.cloud.freeable === false) {
+    toast('Liberação por atributo não se aplica a esta pasta (Google Drive).', 'warn');
+    return;
+  }
   const ok = await confirmModal({
     title: '☁️ Liberar espaço de TODAS as subpastas',
     msg: 'Todos os arquivos locais das subpastas listadas serão tornados <b>somente-nuvem</b>. Nada é excluído da nuvem.',
@@ -657,28 +718,41 @@ document.querySelectorAll('th[data-sort]').forEach(th => {
 async function loadSuggestions() {
   const el = $('suggestions');
   try {
-    const { disks } = await apiGet(API + '/api/suggestions');
-    if (!disks || !disks.length) return;
+    const resp = await apiGet(API + '/api/suggestions');
+    const disks = resp.disks || [];
+    gdriveInfo = resp.googleDrive || null;
+    if (!disks.length) return;
 
     el.innerHTML = '';
     const head = document.createElement('div');
     head.className = 'disks-head';
-    head.innerHTML = '<span class="lbl">💽 Discos do sistema</span><span style="color:var(--cloud);font-size:12px">☁️ = OneDrive detectado</span>';
+    const gdLabel = (gdriveInfo && gdriveInfo.installed)
+      ? ` · <span style="color:var(--green)">☁️ Google Drive (cache ${escapeHtml(gdriveInfo.cacheFormatted || '0 B')})</span>`
+      : '';
+    head.innerHTML = '<span class="lbl">💽 Discos do sistema</span>'
+      + `<span style="font-size:12px"><span style="color:var(--cloud)">☁️ OneDrive</span>${gdLabel}</span>`;
     el.appendChild(head);
 
     const grid = document.createElement('div');
     grid.className = 'disks';
 
     disks.forEach(d => {
+      const odPaths = asArray(d.oneDrivePaths);
+      const gdPaths = asArray(d.googleDrivePaths);
       const card = document.createElement('div');
-      card.className = 'disk-card' + (d.hasOneDrive ? ' has-od' : '');
+      card.className = 'disk-card' + (d.hasOneDrive ? ' has-od' : '') + (d.hasGoogleDrive ? ' has-gd' : '');
       card.title = 'Analisar ' + d.root;
 
       const pct = d.usedPercent;
       const barCls = pct >= 90 ? 'full' : (pct >= 75 ? 'warn' : 'ok');
 
+      const badges = []
+        .concat(d.hasOneDrive    ? ['<span class="dc-badge od">☁️ OneDrive</span>'] : [])
+        .concat(d.hasGoogleDrive ? ['<span class="dc-badge gd">☁️ Google Drive</span>'] : [])
+        .join('');
+
       card.innerHTML = `
-        ${d.hasOneDrive ? '<span class="dc-od">☁️ OneDrive</span>' : ''}
+        ${badges ? `<div class="dc-badges">${badges}</div>` : ''}
         <div class="dc-top">
           <span class="dc-letter">${d.letter}</span>
           <span class="dc-label">${d.label ? escapeHtml(d.label) : 'Sem rótulo'}</span>
@@ -692,14 +766,22 @@ async function loadSuggestions() {
       // Clicar no card analisa a raiz do disco
       card.addEventListener('click', () => scan(d.root));
 
-      // Atalhos diretos para caminhos OneDrive detectados neste disco
-      if (d.oneDrivePaths && d.oneDrivePaths.length) {
+      // Atalhos diretos para caminhos de nuvem detectados neste disco
+      if (odPaths.length || gdPaths.length) {
         const pathsBox = document.createElement('div');
         pathsBox.className = 'dc-paths';
-        d.oneDrivePaths.forEach(p => {
+        odPaths.forEach(p => {
           const pe = document.createElement('div');
           pe.className = 'dc-path'; pe.textContent = '☁️ ' + p; pe.title = p;
           pe.addEventListener('click', (ev) => { ev.stopPropagation(); scan(p); });
+          pathsBox.appendChild(pe);
+        });
+        gdPaths.forEach(gp => {
+          const pe = document.createElement('div');
+          pe.className = 'dc-path gd';
+          const modeTag = gp.mode ? `<span class="mode-tag">${gp.mode === 'stream' ? 'stream' : 'espelho'}</span>` : '';
+          pe.innerHTML = '☁️ ' + escapeHtml(gp.path) + modeTag; pe.title = gp.path;
+          pe.addEventListener('click', (ev) => { ev.stopPropagation(); scan(gp.path); });
           pathsBox.appendChild(pe);
         });
         card.appendChild(pathsBox);

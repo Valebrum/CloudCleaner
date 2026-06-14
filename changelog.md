@@ -7,6 +7,31 @@ seguindo [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.1] – 2026-06-13
+Suporte a **Google Drive for Desktop** (detecção) + correção de um bug latente de espaço. (#17)
+
+### Pesquisa (Mirror vs Stream)
+- O Google Drive for Desktop **não usa a Cloud Files API do Windows** como o OneDrive. Foram mapeados dois modos:
+  - **Stream** — monta um **volume virtual FAT32** (rótulo `Google Drive`, padrão `G:`) onde os arquivos aparecem com o **tamanho lógico** e atributo `Normal`. O FAT32 **não suporta** os bits `Offline`/`Pinned`/`Unpinned`, então `attrib +U` / `SetFileAttributesW(UNPINNED)` **não liberam nada**. O footprint local real é o `content_cache` em `%LOCALAPPDATA%\Google\DriveFS\<conta>\content_cache`.
+  - **Mirror** — sincroniza uma **pasta local real (NTFS)**; todo arquivo é cópia local, recuperável só deletando ou trocando a pasta para Stream.
+
+### Adicionado
+- **Detecção de Google Drive** por assinatura de volume (`VolumeName = "Google Drive"`, independente do idioma — funciona com `Meu Drive`/`My Drive`) e por varredura de pastas (Mirror). Novas funções: `Test-IsGoogleDriveStreamVolume`, `Get-GoogleDriveStreamVolumes`, `Get-GoogleDriveCacheInfo`, `Get-CaminhosGoogleDrive`, `Resolve-CloudInfo`, `Get-PathCloudInfo`.
+- `/api/suggestions` agora retorna um bloco `googleDrive` (instalado, **tamanho do content_cache**, contas, caminhos) e flags `hasGoogleDrive`/`googleDrivePaths` por disco.
+- `/api/scan` retorna um bloco `cloud` (`provider`, `mode`, `freeable`, `note`) classificando o caminho analisado.
+- **Frontend**: badge e atalhos de Google Drive nos cards (com selo `stream`/`espelho`), exibição do cache local, e um **aviso explicativo** quando a pasta é Google Drive.
+- Switch **`-NoBrowser`** para subir o servidor sem abrir o navegador (execução headless/CI).
+- **Testes** sem dependência de Pester em `tests/Run-Tests.ps1` (21 asserts sobre as funções puras).
+
+### Corrigido
+- **Bug latente de espaço**: apontar a "Liberar espaço" para uma pasta do Google Drive **Stream** era um no-op que **super-reportava** bytes liberados (no FAT32 todos os arquivos contam como locais). Agora `/api/free-space` **recusa** caminhos do Google Drive com mensagem clara, e a UI **desativa** os botões de liberar e mostra `Liberável por atributo: N/D`.
+- Cards de disco com **um único** caminho de nuvem deixavam de renderizar o atalho (PowerShell `ConvertTo-Json` desempacota arrays de 1 elemento); normalizado no frontend com `asArray()`.
+
+### Notas
+- A *limpeza* do cache do Stream (deletar `content_cache`) **não** é automatizada nesta versão por segurança (o DriveFS precisa estar parado). A ferramenta detecta e orienta; clearing guardado fica como follow-up.
+
+---
+
 ## [1.0.0] – 2026-06-01
 Primeira versão estável. 🎉
 
