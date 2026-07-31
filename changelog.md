@@ -7,6 +7,27 @@ seguindo [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.1.0] – 2026-07-31
+Suporte a **iCloud Drive** (iCloud for Windows). (#18)
+
+### Adicionado
+- **Detecção do iCloud Drive**: nomes de pasta padrão em `%USERPROFILE%` (`iCloud Drive` e `iCloudDrive`, cobrindo o app da Microsoft Store e o instalador MSI clássico), leitura do **registro do Windows** (`SyncRootManager`) para achar a pasta caso tenha sido **movida**, e varredura nas raízes de disco — mesmo padrão já usado para OneDrive/Google Drive. Sem iCloud instalado, a nuvem não aparece (sem erro), igual ao comportamento já existente para Google Drive ausente. Novas funções: `Get-ICloudFolderNames`, `Test-IsPlausibleWindowsPath`, `Get-ICloudPathsFromRegistry`, `Get-CaminhosICloud`.
+- `Resolve-CloudInfo` ganhou o parâmetro `-ICloudRoots` e o `provider = 'icloud'` (`freeable = $true`) — o iCloud Drive usa a **mesma Cloud Files API** do OneDrive, então **reusa o mesmo motor** de liberação por atributo (`+U -P`), sem caminho novo.
+- `/api/suggestions` agora retorna `icloudPaths` (lista) e, por disco, `icloudPaths`/`hasICloud`. `/api/scan` classifica caminhos do iCloud Drive no bloco `cloud`.
+- **Frontend**: badge e atalhos do iCloud Drive nos cards do dashboard de discos (cor roxa, distinta de OneDrive/Google Drive).
+- **Testes**: 14 novos asserts cobrindo a classificação do iCloud Drive em `Resolve-CloudInfo` (incluindo a proteção contra casar prefixo parcialmente, ex.: `iCloud DriveX` não casa com `iCloud Drive`) e as funções puras `Get-ICloudFolderNames`/`Test-IsPlausibleWindowsPath` — total do suite: **35 passou, 0 falhou**.
+
+### Corrigido
+- `Get-CaminhosOneDrive`/`Get-GoogleDriveAppData`/`Get-GoogleDriveCacheInfo` não tratavam a ausência de `$env:USERPROFILE`/`$env:LOCALAPPDATA` (variável nula) — agora guardado, evitando erro 500 em `/api/suggestions` nesse cenário.
+
+### Fora de escopo
+- **Fotos do iCloud** (armazenamento próprio, separado do iCloud Drive) — não coberto por esta entrega.
+
+### Nota
+- Sem uma máquina Windows com iCloud instalado neste ciclo de desenvolvimento para validar fisicamente; a lógica de detecção/classificação foi coberta por testes automatizados (sem depender de Windows real). Validação física pendente na máquina de destino.
+
+---
+
 ## [1.0.1] – 2026-06-13
 Suporte a **Google Drive for Desktop** (detecção) + correção de um bug latente de espaço. (#17)
 
