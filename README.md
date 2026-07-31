@@ -1,13 +1,15 @@
-# ![CloudCleaner](https://img.shields.io/badge/Valebrum-CloudCleaner-blue) CloudCleaner — Analisador e Otimizador de Pastas OneDrive e Google Drive
+# ![CloudCleaner](https://img.shields.io/badge/Valebrum-CloudCleaner-blue) CloudCleaner — Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive
 
-![Versão](https://img.shields.io/badge/vers%C3%A3o-1.0.1-success)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-1.1.0-success)
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.x%20%7C%207%2B-5391FE?logo=powershell&logoColor=white)
 ![Plataforma](https://img.shields.io/badge/plataforma-Windows-0078D6?logo=windows&logoColor=white)
 ![Licença](https://img.shields.io/badge/licen%C3%A7a-Propriet%C3%A1ria%20Valebrum%20v1.1-red)
 
 **CloudCleaner** é um **analisador e otimizador de pastas OneDrive** com backend em PowerShell e uma **interface HTML visual**. Ele mostra, lado a lado, o **tamanho lógico** (total na nuvem) e o **tamanho local** (o que realmente ocupa o disco), e permite **liberar espaço** (tornar arquivos somente-nuvem) ou **deletar** — tudo com poucos cliques.
 
-A partir da **v1.0.1**, o CloudCleaner também **detecta o Google Drive for Desktop** (modos **Stream** e **Espelho/Mirror**), mede o cache local do Stream e impede ações que não fariam efeito nesse provedor. Veja [OneDrive vs. Google Drive](#-onedrive-vs-google-drive-mirror-vs-stream).
+A partir da **v1.1.0**, o CloudCleaner também **detecta o iCloud Drive** (iCloud for Windows). Como o iCloud usa a mesma Cloud Files API do Windows que o OneDrive, a liberação de espaço reusa o **mesmo motor** — sem caminho novo, só detecção nova. Veja [iCloud Drive](#-icloud-drive).
+
+Desde a **v1.0.1**, o CloudCleaner também **detecta o Google Drive for Desktop** (modos **Stream** e **Espelho/Mirror**), mede o cache local do Stream e impede ações que não fariam efeito nesse provedor. Veja [OneDrive vs. Google Drive](#-onedrive-vs-google-drive-mirror-vs-stream).
 
 > Migrado do script `tamanhosNasPastas0.83.ps1` para um projeto público com interface gráfica web.
 
@@ -21,7 +23,7 @@ A partir da **v1.0.1**, o CloudCleaner também **detecta o Google Drive for Desk
 | ☁️ **Liberar espaço** | Torna arquivos *somente-nuvem* (`+U -P`) sem excluí-los da nuvem |
 | 🗑️ **Deletar arquivos** | Remove arquivos definitivamente (com modal de confirmação) |
 | ⏳ **Progresso ao vivo** | Barra de progresso via SSE com %, contagem, arquivo atual, ETA e **cancelar** |
-| 💽 **Dashboard de discos** | Cards de todos os volumes com rótulo, uso, livre e OneDrive detectado |
+| 💽 **Dashboard de discos** | Cards de todos os volumes com rótulo, uso, livre e OneDrive/iCloud Drive/Google Drive detectados |
 | 📂 **Drill-down** | Clique numa subpasta para navegar e analisar mais fundo |
 | 🧭 **Breadcrumb** | Navegação por trilha de pastas, com volta a qualquer nível |
 | 📈 **Barras visuais** | Proporção lógico/local por subpasta, ordenável por coluna |
@@ -115,7 +117,22 @@ O OneDrive (Files On-Demand) mantém arquivos *somente-nuvem* que **não ocupam 
 **☁️ Liberar** = `attrib +U -P` → mantém na nuvem, libera o disco.
 **🗑️ Deletar** = remove o arquivo → some do disco **e** da nuvem (se sincronizado).
 
-> ⚠️ O mecanismo de **Liberar** acima vale para o **OneDrive** (e qualquer provedor que use a *Cloud Files API* do Windows). **Não** vale para o Google Drive — veja abaixo.
+> ⚠️ O mecanismo de **Liberar** acima vale para o **OneDrive** (e qualquer provedor que use a *Cloud Files API* do Windows, como o **iCloud Drive**). **Não** vale para o Google Drive — veja abaixo.
+
+---
+
+## ☁️ iCloud Drive
+
+O **iCloud for Windows** usa a **mesma Cloud Files API** do OneDrive (placeholders NTFS + atributo `Offline`, pin/unpin via `attrib +U`/`+P`). Por isso o CloudCleaner **reusa o mesmo motor de liberação do OneDrive** para o iCloud Drive — não existe um caminho novo, só uma detecção nova.
+
+**Como o CloudCleaner detecta a pasta do iCloud Drive:**
+
+- Pelos **nomes de pasta padrão** dentro do seu perfil de usuário: `iCloud Drive` (com espaço — app da Microsoft Store, iCloud 14+) e `iCloudDrive` (sem espaço — instalador MSI clássico mais antigo).
+- Pelo **registro do Windows** (`SyncRootManager`, o mesmo mecanismo que qualquer provedor Files On-Demand usa para se anunciar ao Explorer), cobrindo o caso de você ter **movido** a pasta do iCloud Drive para outro local pelo próprio app da Apple.
+- Por uma **varredura** nas raízes de cada disco, igual à já feita para OneDrive/Google Drive.
+- **Sem iCloud instalado** na máquina, a nuvem **não aparece** na tela — sem erro, igual ao comportamento já existente quando falta o Google Drive.
+
+> Fora de escopo: **Fotos do iCloud** (armazenamento próprio, separado do iCloud Drive) não é coberto por esta detecção.
 
 ---
 
@@ -149,9 +166,9 @@ O backend expõe endpoints simples em `http://localhost:8080`:
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
-| `GET`  | `/api/scan?path=<caminho>` | Subpastas com tamanhos lógico/local, totais e bloco `cloud` (`provider`, `mode`, `freeable`, `note`) |
+| `GET`  | `/api/scan?path=<caminho>` | Subpastas com tamanhos lógico/local, totais e bloco `cloud` (`provider`: `onedrive`/`icloud`/`googledrive`/`none`, `mode`, `freeable`, `note`) |
 | `GET`  | `/api/disk-free?path=<caminho>` | Espaço livre/usado do volume |
-| `GET`  | `/api/suggestions` | Discos do sistema (uso por volume) + OneDrive e **Google Drive** detectados (bloco `googleDrive` com tamanho do `content_cache`) |
+| `GET`  | `/api/suggestions` | Discos do sistema (uso por volume) + OneDrive, **iCloud Drive** (`icloudPaths`) e **Google Drive** detectados (bloco `googleDrive` com tamanho do `content_cache`) |
 | `GET`  | `/api/free-space?path=<caminho>` | **SSE** — libera espaço (somente-nuvem) com progresso ao vivo. **Recusa** caminhos do Google Drive (`phase: 'error'` com explicação) |
 | `GET`  | `/api/delete?path=<caminho>` | **SSE** — deleta arquivos da pasta com progresso ao vivo |
 
@@ -169,7 +186,7 @@ Os testes não dependem de Pester (rodam em PowerShell 5.x ou 7+). Eles fazem *d
 powershell -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1
 ```
 
-Saída esperada: `Resultado: 21 passou, 0 falhou.` (código de saída `0`). Também imprime, de forma informativa, se há Google Drive instalado e o tamanho do `content_cache` detectado na máquina.
+Saída esperada: `Resultado: 35 passou, 0 falhou.` (código de saída `0`). Também imprime, de forma informativa, se há Google Drive e iCloud Drive instalados na máquina.
 
 ---
 

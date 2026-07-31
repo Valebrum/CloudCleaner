@@ -67,11 +67,56 @@ Assert-True  $r4.freeable         'caminho comum é liberável (sem bloqueio)'
 $r5 = Resolve-CloudInfo -Path 'C:\Users\nelson\Meu DriveX\y' -StreamRoots @() -MirrorRoots $mirror -OneDriveRoots @()
 Assert-Equal 'none' $r5.provider 'Meu DriveX NÃO casa com Meu Drive (prefixo exato)'
 
+Write-Host "=== Resolve-CloudInfo — iCloud Drive (reusa o motor do OneDrive) ===" -ForegroundColor Cyan
+$icloud = @('D:\iCloud Drive')
+
+$r6 = Resolve-CloudInfo -Path 'D:\iCloud Drive\Documentos' -StreamRoots $stream -MirrorRoots $mirror -OneDriveRoots $od -ICloudRoots $icloud
+Assert-Equal 'icloud' $r6.provider 'caminho em iCloud Drive -> icloud'
+Assert-True  $r6.freeable            'iCloud Drive É liberável por atributo (mesmo motor do OneDrive)'
+
+$r7 = Resolve-CloudInfo -Path 'D:\iCloud Drive' -StreamRoots @() -MirrorRoots @() -OneDriveRoots @() -ICloudRoots $icloud
+Assert-Equal 'icloud' $r7.provider 'a própria raiz do iCloud Drive também classifica como icloud'
+
+# Borda: prefixo não pode casar parcialmente (mesma proteção do OneDrive/Google Drive).
+$r8 = Resolve-CloudInfo -Path 'C:\Users\nelson\iCloud DriveX\y' -StreamRoots @() -MirrorRoots @() -OneDriveRoots @() -ICloudRoots @('C:\Users\nelson\iCloud Drive')
+Assert-Equal 'none' $r8.provider 'iCloud DriveX NÃO casa com iCloud Drive (prefixo exato)'
+
+# Sem iCloud instalado (raízes vazias) -> não aparece nada, sem erro.
+$r9 = Resolve-CloudInfo -Path 'C:\Temp\qualquer' -StreamRoots @() -MirrorRoots @() -OneDriveRoots @() -ICloudRoots @()
+Assert-Equal 'none' $r9.provider 'sem iCloud instalado (ICloudRoots vazio) -> none, sem erro'
+
+Write-Host "=== Get-ICloudFolderNames (nomes de pasta candidatos, sem I/O) ===" -ForegroundColor Cyan
+$icNames = Get-ICloudFolderNames
+Assert-True ($icNames.Count -ge 2)                    'ao menos dois nomes candidatos (app da Store x MSI clássico)'
+Assert-True (('iCloud Drive')  -in $icNames)           'inclui "iCloud Drive" (com espaço, app da Microsoft Store / iCloud 14+)'
+Assert-True (('iCloudDrive')   -in $icNames)           'inclui "iCloudDrive" (sem espaço, instalador MSI clássico)'
+
+Write-Host "=== Test-IsPlausibleWindowsPath (filtro de valor de registro, sem I/O) ===" -ForegroundColor Cyan
+Assert-True  (Test-IsPlausibleWindowsPath 'D:\iCloud Drive')        'caminho absoluto Windows válido (D:\...)'
+Assert-True  (Test-IsPlausibleWindowsPath 'C:\Users\nelson\iCloudDrive') 'caminho absoluto Windows válido (C:\...)'
+Assert-False (Test-IsPlausibleWindowsPath '')                        'string vazia não é caminho'
+Assert-False (Test-IsPlausibleWindowsPath $null)                     'null não é caminho'
+Assert-False (Test-IsPlausibleWindowsPath 'iCloud Drive')            'caminho relativo (sem letra de unidade) não é válido'
+Assert-False (Test-IsPlausibleWindowsPath '/home/nelson/iCloud')     'caminho estilo Unix não é válido'
+
 Write-Host "=== Detecção ao vivo (informativo; não falha o suite) ===" -ForegroundColor Cyan
-$cache = Get-GoogleDriveCacheInfo
-Write-Host ("  Google Drive instalado: {0} | content_cache total: {1}" -f $cache.installed, $cache.totalFormatted) -ForegroundColor DarkGray
-$vols = Get-GoogleDriveStreamVolumes
-Write-Host ("  Volumes Stream detectados: {0}" -f (($vols | ForEach-Object { $_.letter }) -join ', ')) -ForegroundColor DarkGray
+# Best-effort: em ambiente não-Windows (ex.: CI/dev fora do Windows) variáveis como
+# $env:LOCALAPPDATA/$env:USERPROFILE e o registro não existem — isso é esperado e não
+# deve derrubar o suite (a seção é só informativa).
+try {
+    $cache = Get-GoogleDriveCacheInfo
+    Write-Host ("  Google Drive instalado: {0} | content_cache total: {1}" -f $cache.installed, $cache.totalFormatted) -ForegroundColor DarkGray
+    $vols = Get-GoogleDriveStreamVolumes
+    Write-Host ("  Volumes Stream detectados: {0}" -f (($vols | ForEach-Object { $_.letter }) -join ', ')) -ForegroundColor DarkGray
+} catch {
+    Write-Host ("  (detecção ao vivo de Google Drive indisponível neste ambiente: {0})" -f $_.Exception.Message) -ForegroundColor DarkGray
+}
+try {
+    $ic = Get-CaminhosICloud
+    Write-Host ("  Pastas iCloud Drive detectadas: {0}" -f (($ic -join ', '))) -ForegroundColor DarkGray
+} catch {
+    Write-Host ("  (detecção ao vivo de iCloud Drive indisponível neste ambiente: {0})" -f $_.Exception.Message) -ForegroundColor DarkGray
+}
 
 Write-Host ""
 $summaryColor = 'Green'; if ($script:Fail -gt 0) { $summaryColor = 'Red' }

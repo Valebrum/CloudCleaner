@@ -1,13 +1,18 @@
-# CloudCleaner - Analisador e Otimizador de Pastas OneDrive e Google Drive
+# CloudCleaner - Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive
 # Idealizador: Nelson Brum
 # Desenvolvedor: Claude + Nelson
-# Versão: 1.0.1
-# Data: 2026-06-13
+# Versão: 1.1.0
+# Data: 2026-07-31
 #
 # O que faz:
 #   Analisa pastas (OneDrive-friendly), comparando tamanho LÓGICO (total na nuvem)
 #   com tamanho LOCAL (ocupado no disco, ignorando itens só-na-nuvem). Permite
 #   liberar espaço local (tornar somente-nuvem via attrib +U -P) ou deletar arquivos.
+#
+#   Detecta também o iCloud Drive (iCloud for Windows), que usa a MESMA Cloud Files
+#   API do OneDrive — mesmo motor de liberação por atributo, só muda a detecção da
+#   pasta sincronizada (padrão + registro do Windows, pasta pode ter sido movida).
+#   Ver bloco "DETECÇÃO ICLOUD DRIVE". Fora de escopo: Fotos do iCloud.
 #
 #   Detecta também o Google Drive for Desktop (Mirror vs Stream). Diferente do
 #   OneDrive, o Google Drive NÃO usa a Cloud Files API do Windows: o Stream monta
@@ -286,7 +291,7 @@ function Get-CaminhosOneDrive {
         $v = [Environment]::GetEnvironmentVariable($e)
         if ($v) { $cands += $v }
     }
-    $cands += (Join-Path $env:USERPROFILE 'OneDrive')
+    if ($env:USERPROFILE) { $cands += (Join-Path $env:USERPROFILE 'OneDrive') }
 
     # Procura pastas "OneDrive*" no perfil do usuário e na raiz de cada drive informado.
     $searchRoots = @($env:USERPROFILE) + $Roots
@@ -334,6 +339,7 @@ $script:GDriveFolderNames  = @('My Drive', 'Meu Drive', 'Google Drive')
 
 # Caminho base do app (a existência indica Google Drive for Desktop instalado).
 function Get-GoogleDriveAppData {
+    if (-not $env:LOCALAPPDATA) { return $null }
     return (Join-Path $env:LOCALAPPDATA 'Google\DriveFS')
 }
 
@@ -355,7 +361,7 @@ function Get-GoogleDriveCacheInfo {
     $base = Get-GoogleDriveAppData
     $accounts = @()
     $total = [int64]0
-    if (Test-Path -LiteralPath $base) {
+    if ($base -and (Test-Path -LiteralPath $base)) {
         Get-ChildItem -LiteralPath $base -Directory -Force -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '^\d+$' } |
             ForEach-Object {
@@ -375,7 +381,7 @@ function Get-GoogleDriveCacheInfo {
             }
     }
     return [PSCustomObject]@{
-        installed      = (Test-Path -LiteralPath $base)
+        installed      = [bool]($base -and (Test-Path -LiteralPath $base))
         totalBytes     = [int64]$total
         totalFormatted = Format-Tamanho $total
         accounts       = @($accounts)
@@ -422,6 +428,105 @@ function Get-CaminhosGoogleDrive {
     return @($result)
 }
 
+# ================================================================
+# DETECÇÃO ICLOUD DRIVE (iCloud for Windows)
+# ================================================================
+# O iCloud for Windows usa a MESMA Cloud Files API do OneDrive (placeholders NTFS +
+# atributo Offline, pin/unpin via SetFileAttributesW) — por isso a liberação de
+# espaço REUSA o motor já existente (Invoke-LiberarEspacoStream / Get-UnpinnedAttributeValue),
+# sem caminho novo. O que muda é só a DETECÇÃO da pasta sincronizada:
+#
+#   • Nome padrão: "iCloud Drive" (com espaço; instalador via Microsoft Store,
+#     iCloud 14+) ou "iCloudDrive" (sem espaço; instalador MSI clássico mais antigo).
+#   • A pasta pode ter sido MOVIDA pelo usuário (o próprio app do iCloud permite
+#     "Change..." o destino) — por isso não assumimos caminho fixo: além dos nomes
+#     padrão em %USERPROFILE%, tentamos ler o destino real no registro do Windows
+#     (SyncRootManager, o mesmo mecanismo de registro que QUALQUER provedor Files
+#     On-Demand usa para se anunciar ao Explorer) e também varremos as raízes de
+#     disco informadas, como já é feito para OneDrive/Google Drive.
+#   • Se nada for encontrado (iCloud não instalado/nunca configurado), a lista volta
+#     vazia — sem erro — e a nuvem simplesmente não aparece na tela, igual ao
+#     comportamento já existente para Google Drive ausente.
+
+# (PURA) Nomes de pasta conhecidos do iCloud Drive no Windows, sem I/O — usados como
+# candidatos padrão e como filtro de varredura.
+function Get-ICloudFolderNames {
+    return @('iCloud Drive', 'iCloudDrive')
+}
+
+# (PURA) Valida se um valor plausivelmente representa um caminho absoluto do Windows
+# (ex.: um valor lido do registro). Sem I/O — protege contra valores vazios/relativos/
+# de outro SO antes de gastar um Test-Path.
+function Test-IsPlausibleWindowsPath {
+    param([AllowNull()][string]$Value)
+    return [bool]($Value -and ($Value -match '^[A-Za-z]:\\'))
+}
+
+# Lê, na medida do possível, o destino real da pasta do iCloud Drive registrado no
+# Windows como "sync root" (SyncRootManager) — o mesmo mecanismo de registro que
+# QUALQUER provedor Files On-Demand (OneDrive, iCloud, Dropbox...) usa para anunciar
+# sua pasta sincronizada ao Explorer. Cobre o caso de a pasta ter sido MOVIDA para um
+# local não-padrão. Best-effort: numa máquina sem iCloud, sem o driver Cloud Filter,
+# ou fora do Windows, a chave simplesmente não existe — retorna lista vazia, sem erro.
+function Get-ICloudPathsFromRegistry {
+    $syncRootKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager'
+    $found = @()
+    if (-not (Test-Path -LiteralPath $syncRootKey -ErrorAction SilentlyContinue)) { return @() }
+    try {
+        $providerKeys = Get-ChildItem -LiteralPath $syncRootKey -ErrorAction SilentlyContinue |
+            Where-Object { $_.PSChildName -like 'iCloudDrive*' -or $_.PSChildName -like '*iCloud*Drive*' }
+        foreach ($pk in $providerKeys) {
+            # O caminho local pode estar num valor da própria chave do provedor...
+            try {
+                $props = Get-ItemProperty -LiteralPath $pk.PSPath -ErrorAction SilentlyContinue
+                foreach ($name in @('UserSyncRoot', 'SyncRootPath', 'MountPoint')) {
+                    if ($props -and $props.PSObject.Properties[$name]) { $found += [string]$props.$name }
+                }
+            } catch {}
+            # ...ou numa subchave "UserSyncRoots\<SID>" (padrão documentado do Windows
+            # para sync roots por usuário).
+            try {
+                $usrKey = Join-Path $pk.PSPath 'UserSyncRoots'
+                if (Test-Path -LiteralPath $usrKey -ErrorAction SilentlyContinue) {
+                    Get-ChildItem -LiteralPath $usrKey -ErrorAction SilentlyContinue | ForEach-Object {
+                        try {
+                            $p2 = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+                            if ($p2) {
+                                $p2.PSObject.Properties | Where-Object { $_.Value -is [string] } | ForEach-Object { $found += [string]$_.Value }
+                            }
+                        } catch {}
+                    }
+                }
+            } catch {}
+        }
+    } catch {}
+    return @($found | Where-Object { Test-IsPlausibleWindowsPath $_ } | Select-Object -Unique)
+}
+
+# Detecta caminhos do iCloud Drive existentes na máquina: candidatos padrão em
+# %USERPROFILE%, o que o registro apontar (pasta movida) e varredura por nome nas
+# raízes informadas (mesmo padrão de Get-CaminhosOneDrive). Só entram candidatos que
+# realmente existem no disco (Test-Path) — sem iCloud instalado, devolve lista vazia.
+function Get-CaminhosICloud {
+    param([string[]]$Roots = @())
+    $cands = @()
+
+    foreach ($name in (Get-ICloudFolderNames)) {
+        if ($env:USERPROFILE) { $cands += (Join-Path $env:USERPROFILE $name) }
+    }
+
+    $cands += (Get-ICloudPathsFromRegistry)
+
+    $searchRoots = @($env:USERPROFILE) + $Roots
+    foreach ($r in ($searchRoots | Where-Object { $_ } | Select-Object -Unique)) {
+        Get-ChildItem -LiteralPath $r -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like 'iCloud*Drive*' } |
+            ForEach-Object { $cands += $_.FullName }
+    }
+
+    return @($cands | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+}
+
 # (PURA) Classifica um caminho quanto ao provedor de nuvem e se a liberação por
 # atributo (attrib +U) se aplica. Recebe as raízes conhecidas (injetáveis = testável).
 function Resolve-CloudInfo {
@@ -429,7 +534,8 @@ function Resolve-CloudInfo {
         [Parameter(Mandatory)][string]$Path,
         [string[]]$StreamRoots   = @(),
         [string[]]$MirrorRoots   = @(),
-        [string[]]$OneDriveRoots = @()
+        [string[]]$OneDriveRoots = @(),
+        [string[]]$ICloudRoots   = @()
     )
     $norm = ($Path.TrimEnd('\') + '\').ToUpperInvariant()
     $under = {
@@ -463,6 +569,13 @@ function Resolve-CloudInfo {
             return [PSCustomObject]@{ provider = 'onedrive'; mode = 'filesondemand'; freeable = $true; note = '' }
         }
     }
+    foreach ($r in $ICloudRoots) {
+        if (& $under $r) {
+            # iCloud for Windows usa a MESMA Cloud Files API do OneDrive (placeholders NTFS
+            # + atributo Offline): mesmo motor de liberação por atributo (+U -P).
+            return [PSCustomObject]@{ provider = 'icloud'; mode = 'filesondemand'; freeable = $true; note = '' }
+        }
+    }
     return [PSCustomObject]@{ provider = 'none'; mode = ''; freeable = $true; note = '' }
 }
 
@@ -474,7 +587,8 @@ function Get-PathCloudInfo {
     $streamRoots = @((Get-GoogleDriveStreamVolumes).root) + @($gd | Where-Object { $_.mode -eq 'stream' } | ForEach-Object { $_.path })
     $mirrorRoots = @($gd | Where-Object { $_.mode -eq 'mirror' } | ForEach-Object { $_.path })
     $odRoots     = @(Get-CaminhosOneDrive -Roots $driveRoots)
-    return Resolve-CloudInfo -Path $Path -StreamRoots $streamRoots -MirrorRoots $mirrorRoots -OneDriveRoots $odRoots
+    $icRoots     = @(Get-CaminhosICloud -Roots $driveRoots)
+    return Resolve-CloudInfo -Path $Path -StreamRoots $streamRoots -MirrorRoots $mirrorRoots -OneDriveRoots $odRoots -ICloudRoots $icRoots
 }
 
 # Varre todos os discos do sistema de arquivos e retorna métricas + OneDrive detectado.
@@ -484,6 +598,7 @@ function Get-DiscosDoSistema {
 
     $allOneDrive = Get-CaminhosOneDrive -Roots @($drives | ForEach-Object { $_.Root })
     $allGoogle   = Get-CaminhosGoogleDrive -Roots @($drives | ForEach-Object { $_.Root })
+    $allICloud   = Get-CaminhosICloud -Roots @($drives | ForEach-Object { $_.Root })
     $gdriveCache = Get-GoogleDriveCacheInfo
 
     $disks = foreach ($d in $drives) {
@@ -499,9 +614,10 @@ function Get-DiscosDoSistema {
             if ($vol) { $label = $vol.VolumeName }
         } catch {}
 
-        # Caminhos OneDrive e Google Drive que vivem neste drive
+        # Caminhos OneDrive, Google Drive e iCloud Drive que vivem neste drive
         $odHere = @($allOneDrive | Where-Object { $_ -like ($d.Name + ':*') })
         $gdHere = @($allGoogle   | Where-Object { $_.path -like ($d.Name + ':*') })
+        $icHere = @($allICloud   | Where-Object { $_ -like ($d.Name + ':*') })
 
         [PSCustomObject]@{
             letter           = $d.Name + ':'
@@ -518,12 +634,15 @@ function Get-DiscosDoSistema {
             hasOneDrive      = ($odHere.Count -gt 0)
             googleDrivePaths = $gdHere
             hasGoogleDrive   = ($gdHere.Count -gt 0)
+            icloudPaths      = $icHere
+            hasICloud        = ($icHere.Count -gt 0)
         }
     }
 
     return [PSCustomObject]@{
         disks         = @($disks)
         oneDrivePaths = $allOneDrive
+        icloudPaths   = $allICloud
         googleDrive   = [PSCustomObject]@{
             installed      = $gdriveCache.installed
             cacheBytes     = $gdriveCache.totalBytes
@@ -616,8 +735,8 @@ function Start-CloudCleaner {
     }
 
     Write-Host "=================================================" -ForegroundColor Cyan
-    Write-Host "  CloudCleaner v1.0.1" -ForegroundColor Cyan
-    Write-Host "  Analisador e Otimizador de Pastas OneDrive e Google Drive" -ForegroundColor Cyan
+    Write-Host "  CloudCleaner v1.1.0" -ForegroundColor Cyan
+    Write-Host "  Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive" -ForegroundColor Cyan
     Write-Host "=================================================" -ForegroundColor Cyan
     Write-Host "Servidor rodando em: $($script:Prefix)" -ForegroundColor Green
     Write-Host "Abrindo o navegador..." -ForegroundColor Green
@@ -657,7 +776,7 @@ function Start-CloudCleaner {
 
                     '^/api/suggestions$' {
                         $info = Get-DiscosDoSistema
-                        Send-Json -Response $response -Object @{ disks = $info.disks; paths = $info.oneDrivePaths; googleDrive = $info.googleDrive }
+                        Send-Json -Response $response -Object @{ disks = $info.disks; paths = $info.oneDrivePaths; icloudPaths = $info.icloudPaths; googleDrive = $info.googleDrive }
                         break
                     }
 
