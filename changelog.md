@@ -7,6 +7,45 @@ seguindo [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.2.0] – 2026-08-07
+Limpeza **GUARDADA** do `content_cache` do Google Drive Stream. (Follow-up de #17/PR #8.)
+
+### Adicionado
+- **`Invoke-LimpezaGuardadaGoogleDriveCache`**: implementa de fato a limpeza do `content_cache`
+  do Google Drive Stream (detectado/medido desde a v1.0.1, mas nunca apagado até agora), com
+  **3 salvaguardas**: (1) confirmação forte — o usuário precisa **digitar** a frase exata
+  (`APAGAR CACHE`) no modal, validada de novo no backend; (2) resguardo do estado antes de apagar
+  — o `content_cache` é **movido** (nunca apagado) para um backup com timestamp; (3) aborta sem
+  tocar em nada se detectar atividade local recente na pasta sincronizada (possível upload
+  pendente para a nuvem).
+- Novas funções, todas testáveis por injeção de dependência (sem tocar em processo/disco reais
+  nos testes): `Test-CacheCleanupSafe`, `Test-RecentLocalActivity`, `Get-GoogleDriveRecentActivityFiles`,
+  `Backup-GoogleDriveCache`, `Restore-GoogleDriveCache`, `Get-GoogleDriveFsProcessInfo`,
+  `Stop-GoogleDriveFsProcess`, `Start-GoogleDriveFsProcess`.
+- Novo endpoint `POST /api/gdrive-cache-cleanup` (`{ account, confirm }`) e `/api/suggestions`
+  passou a expor `googleDrive.cleanupConfirmPhrase` (fonte única da frase de confirmação).
+- **Frontend**: botão **"🧹 Limpar cache guardado"** por conta detectada, modal de confirmação
+  estendido com campo de **digitação obrigatória** (botão só habilita com o texto exato).
+- **Testes**: `tests/GoogleDriveGuardedCleanup.Tests.ps1` — suite **Pester** (29 testes) cobrindo
+  as 3 salvaguardas, incluindo a prova de reversibilidade (round-trip backup→restore contra
+  pastas falsas do `TestDrive:`).
+
+### Corrigido
+- Um erro de mensagem (`throw` com travessão dentro de string interpolada) em
+  `Restore-GoogleDriveCache` quebrava o parser do **Windows PowerShell 5.1** sob a codepage OEM
+  850 (comum em Windows PT-BR) — corrigido usando só ASCII na mensagem. Achado ao validar a
+  execução real (`-File`) no PC de destino, não só via Pester/pwsh 7.
+
+### Nota de validação
+- Desenvolvido e testado **num PC Windows real com Google Drive for Desktop instalado**
+  (jump do Nelson) — a suite Pester roda inteiramente contra pastas falsas (`TestDrive:`); a
+  única leitura contra o ambiente real foi checagem informativa (processo/disco), nunca
+  escrita/exclusão. O caminho de "confirmação certa" (que de fato pararia o Google Drive e
+  moveria o cache) foi validado só pelos testes injetados — nunca executado contra o cache real
+  de ninguém.
+
+---
+
 ## [1.1.0] – 2026-07-31
 Suporte a **iCloud Drive** (iCloud for Windows). (#18)
 
