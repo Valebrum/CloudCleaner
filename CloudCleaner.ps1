@@ -1,8 +1,8 @@
 # CloudCleaner - Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive
 # Idealizador: Nelson Brum
 # Desenvolvedor: Claude + Nelson
-# Versão: 1.1.0
-# Data: 2026-07-31
+# Versão: 1.2.0
+# Data: 2026-08-07
 #
 # O que faz:
 #   Analisa pastas (OneDrive-friendly), comparando tamanho LÓGICO (total na nuvem)
@@ -47,6 +47,11 @@ $ErrorActionPreference = 'Stop'
 $script:Port    = 8080
 $script:Prefix  = "http://localhost:$($script:Port)/"
 $script:Root    = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+# Frase de confirmação forte exigida pela limpeza GUARDADA do cache do Google Drive
+# Stream (ver bloco "LIMPEZA GUARDADA DO CACHE"). Fica num só lugar (backend) e a UI
+# a lê de /api/suggestions — nunca hardcoded duas vezes.
+$script:GDriveCleanupConfirmPhrase = 'APAGAR CACHE'
 
 # API nativa Win32 para definir atributos de nuvem (UNPINNED/PINNED), que o enum
 # [System.IO.FileAttributes] do .NET rejeita. É exatamente o que o attrib.exe faz.
@@ -429,6 +434,230 @@ function Get-CaminhosGoogleDrive {
 }
 
 # ================================================================
+# LIMPEZA GUARDADA DO CACHE (content_cache) — Google Drive Stream
+# ================================================================
+# Follow-up da detecção acima (#17/PR #8, que parou de propósito em detectar/medir/
+# orientar): implementa a limpeza de fato do content_cache, mas GUARDADA por três
+# salvaguardas exigidas pela task #327:
+#
+#   1) Confirmação FORTE: exige digitar literalmente a frase em $script:GDriveCleanupConfirmPhrase
+#      (checada tanto no backend — fonte da verdade — quanto na UI).
+#   2) Resguardo do estado ANTES de apagar: o content_cache não é apagado, é MOVIDO
+#      (Move-Item) para uma pasta de backup com timestamp ao lado dele. O Google Drive
+#      reconstrói o cache sozinho ao reiniciar; se algo der errado, o backup volta ao
+#      lugar com Restore-GoogleDriveCache.
+#   3) Aborta se houver risco de edição local não sincronizada: antes de tocar em
+#      qualquer coisa, varre a pasta montada (Stream) por arquivos escritos dentro de
+#      uma janela de graça recente — se achar, ABORTA sem mexer em nada (mais vale
+#      pedir para tentar de novo do que arriscar perder um upload pendente).
+#
+# Todas as funções de decisão (Test-*) são PURAS (sem I/O) e testáveis por Pester sem
+# tocar em disco/processo real. As de I/O (Backup-/Restore-/Get-.../Stop-/Start-...)
+# são simples o bastante para serem testadas com pastas FALSAS (TestDrive: do Pester)
+# ou injetadas via scriptblock no orquestrador `Invoke-LimpezaGuardadaGoogleDriveCache`.
+
+# (PURA) Decide se há sinal de atividade local recente (possível upload pendente) numa
+# lista de arquivos já coletada. Recebe o "agora" e a janela de graça como parâmetros
+# (nunca lê o relógio internamente) para ser 100% determinística em teste.
+function Test-RecentLocalActivity {
+    param(
+        [AllowEmptyCollection()][object[]]$Files = @(),
+        [Parameter(Mandatory)][DateTime]$NowUtc,
+        [Parameter(Mandatory)][int]$GraceWindowSeconds
+    )
+    foreach ($f in $Files) {
+        if (-not $f) { continue }
+        $age = ($NowUtc - $f.LastWriteTimeUtc).TotalSeconds
+        if ($age -ge 0 -and $age -lt $GraceWindowSeconds) { return $true }
+    }
+    return $false
+}
+
+# (PURA) Gate único de decisão da limpeza guardada — concentra as 3 salvaguardas numa
+# função sem I/O, fácil de testar em todas as combinações. Retorna { safe, reason }.
+function Test-CacheCleanupSafe {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Confirm,
+        [Parameter(Mandatory)][bool]$HasRecentActivity,
+        [Parameter(Mandatory)][bool]$DriveFsStopped
+    )
+    if ($Confirm -ne $script:GDriveCleanupConfirmPhrase) {
+        return [PSCustomObject]@{
+            safe   = $false
+            reason = "Confirmação inválida. Digite exatamente `"$($script:GDriveCleanupConfirmPhrase)`" para prosseguir."
+        }
+    }
+    if ($HasRecentActivity) {
+        return [PSCustomObject]@{
+            safe   = $false
+            reason = 'Atividade local recente detectada — pode haver upload pendente para a nuvem. Abortado por segurança; confira se o Google Drive está "Atualizado" e tente novamente.'
+        }
+    }
+    if (-not $DriveFsStopped) {
+        return [PSCustomObject]@{
+            safe   = $false
+            reason = 'Não foi possível parar o Google Drive com segurança. Abortado sem apagar nada.'
+        }
+    }
+    return [PSCustomObject]@{ safe = $true; reason = '' }
+}
+
+# (I/O) Lista arquivos da pasta montada do Drive (Stream) com LastWriteTimeUtc, usados
+# como sinal de atividade recente. Pasta ausente/inacessível => lista vazia (sem erro) —
+# quem decide o que isso significa é Test-RecentLocalActivity/Test-CacheCleanupSafe.
+function Get-GoogleDriveRecentActivityFiles {
+    param([Parameter(Mandatory)][string]$Root)
+    if (-not (Test-Path -LiteralPath $Root)) { return @() }
+    return @(Get-ChildItem -LiteralPath $Root -File -Recurse -Force -ErrorAction SilentlyContinue |
+              Select-Object FullName, LastWriteTimeUtc)
+}
+
+# (I/O) Estado atual do processo do DriveFS: se está rodando e o caminho do executável
+# (para conseguir reiniciar depois de parar). Best-effort: numa máquina sem Google Drive
+# instalado, volta "não rodando" sem erro.
+function Get-GoogleDriveFsProcessInfo {
+    $p = Get-Process -Name 'GoogleDriveFS' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $p) { return [PSCustomObject]@{ running = $false; path = $null } }
+    $exePath = $null
+    try { $exePath = $p.Path } catch {}
+    return [PSCustomObject]@{ running = $true; path = $exePath }
+}
+
+# (I/O) Para o(s) processo(s) do DriveFS e espera até $TimeoutSeconds para confirmar
+# que saiu — apagar o content_cache com o processo vivo pode corromper o estado dele.
+# Sem processo rodando já conta como "parado com sucesso" (idempotente).
+function Stop-GoogleDriveFsProcess {
+    param([int]$TimeoutSeconds = 20)
+    $procs = @(Get-Process -Name 'GoogleDriveFS' -ErrorAction SilentlyContinue)
+    if (-not $procs) { return $true }
+    foreach ($p in $procs) { try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch {} }
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Name 'GoogleDriveFS' -ErrorAction SilentlyContinue)) { return $true }
+        Start-Sleep -Milliseconds 300
+    }
+    return -not [bool](Get-Process -Name 'GoogleDriveFS' -ErrorAction SilentlyContinue)
+}
+
+# (I/O) Reinicia o DriveFS a partir do executável já detectado antes de pará-lo.
+function Start-GoogleDriveFsProcess {
+    param([Parameter(Mandatory)][string]$ExePath)
+    if (-not (Test-Path -LiteralPath $ExePath)) {
+        throw "Executável do Google Drive não encontrado em: $ExePath"
+    }
+    Start-Process -FilePath $ExePath | Out-Null
+}
+
+# (I/O) Resguardo do estado: MOVE (nunca apaga) o content_cache para uma pasta de
+# backup com timestamp, ao lado dele. É o que torna a limpeza reversível — o Google
+# Drive reconstrói o content_cache sozinho a partir da nuvem quando reinicia; se algo
+# der errado, Restore-GoogleDriveCache devolve o backup ao lugar original.
+function Backup-GoogleDriveCache {
+    param(
+        [Parameter(Mandatory)][string]$CacheDir,
+        [Parameter(Mandatory)][string]$BackupRoot,
+        [scriptblock]$NowProvider = { [DateTime]::Now }
+    )
+    if (-not (Test-Path -LiteralPath $CacheDir)) {
+        throw "content_cache não encontrado em: $CacheDir"
+    }
+    if (-not (Test-Path -LiteralPath $BackupRoot)) {
+        New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
+    }
+    $stamp = (& $NowProvider).ToString('yyyyMMdd-HHmmss')
+    $dest  = Join-Path $BackupRoot "content_cache.bak-$stamp"
+    if (Test-Path -LiteralPath $dest) {
+        throw "Destino de backup já existe: $dest"
+    }
+    Move-Item -LiteralPath $CacheDir -Destination $dest -Force
+    return $dest
+}
+
+# (I/O) Reverte Backup-GoogleDriveCache: move o backup de volta para o lugar original
+# do content_cache. É a prova de reversibilidade exigida pela task — coberta em teste
+# com pastas falsas (TestDrive:), nunca contra o cache real de ninguém.
+function Restore-GoogleDriveCache {
+    param(
+        [Parameter(Mandatory)][string]$BackupPath,
+        [Parameter(Mandatory)][string]$CacheDir
+    )
+    if (-not (Test-Path -LiteralPath $BackupPath)) {
+        throw "Backup não encontrado em: $BackupPath"
+    }
+    if (Test-Path -LiteralPath $CacheDir) {
+        throw "Ja existe um content_cache em $CacheDir - remova ou renomeie antes de restaurar."
+    }
+    Move-Item -LiteralPath $BackupPath -Destination $CacheDir -Force
+    return $CacheDir
+}
+
+# Orquestrador: aplica as 3 salvaguardas, na ordem certa, e só então parar->mover->
+# reiniciar. Todas as dependências de I/O entram via scriptblock injetável — os testes
+# passam fakes e nunca tocam em processo/disco reais; o uso normal (endpoint HTTP) usa
+# os defaults, que chamam as funções de I/O de verdade.
+function Invoke-LimpezaGuardadaGoogleDriveCache {
+    param(
+        [Parameter(Mandatory)][string]$CacheDir,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Confirm,
+        [string]$BackupRoot,
+        [string]$MountRoot,
+        [int]$GraceWindowSeconds = 900,
+        [scriptblock]$NowProvider       = { [DateTime]::UtcNow },
+        [scriptblock]$GetRecentActivity = { param($Root) Get-GoogleDriveRecentActivityFiles -Root $Root },
+        [scriptblock]$GetDriveFsInfo    = { Get-GoogleDriveFsProcessInfo },
+        [scriptblock]$StopDriveFs       = { Stop-GoogleDriveFsProcess },
+        [scriptblock]$StartDriveFs      = { param($ExePath) Start-GoogleDriveFsProcess -ExePath $ExePath }
+    )
+
+    function New-ResultadoLimpeza {
+        param([bool]$Success, [bool]$Aborted, [string]$Reason, $BackupPath = $null, [bool]$Restarted = $false)
+        return [PSCustomObject]@{
+            success    = $Success
+            aborted    = $Aborted
+            reason     = $Reason
+            backupPath = $BackupPath
+            restarted  = $Restarted
+        }
+    }
+
+    if (-not $BackupRoot) { $BackupRoot = Split-Path -Parent $CacheDir }
+
+    # Gate 1 — atividade local recente, verificada ANTES de tocar em qualquer coisa
+    # (não para o DriveFS à toa se já vamos abortar por outro motivo).
+    $recentFiles = if ($MountRoot) { @(& $GetRecentActivity $MountRoot) } else { @() }
+    $hasRecent = Test-RecentLocalActivity -Files $recentFiles -NowUtc (& $NowProvider) -GraceWindowSeconds $GraceWindowSeconds
+
+    $preGate = Test-CacheCleanupSafe -Confirm $Confirm -HasRecentActivity $hasRecent -DriveFsStopped $true
+    if (-not $preGate.safe) {
+        return New-ResultadoLimpeza $false $true $preGate.reason
+    }
+
+    # Gate 2 — para o DriveFS de verdade (apagar com ele rodando pode corromper estado).
+    $fsInfo  = & $GetDriveFsInfo
+    $stopped = [bool](& $StopDriveFs)
+    $postGate = Test-CacheCleanupSafe -Confirm $Confirm -HasRecentActivity $false -DriveFsStopped $stopped
+    if (-not $postGate.safe) {
+        if ($fsInfo.path) { try { & $StartDriveFs $fsInfo.path } catch {} }
+        return New-ResultadoLimpeza $false $true $postGate.reason
+    }
+
+    # Resguardo do estado (move, não apaga) — só então o cache "some" do lugar original.
+    try {
+        $backupPath = Backup-GoogleDriveCache -CacheDir $CacheDir -BackupRoot $BackupRoot -NowProvider $NowProvider
+    } catch {
+        if ($fsInfo.path) { try { & $StartDriveFs $fsInfo.path } catch {} }
+        return New-ResultadoLimpeza $false $true "Falha ao criar o resguardo: $($_.Exception.Message)"
+    }
+
+    $restarted = $false
+    if ($fsInfo.path) {
+        try { & $StartDriveFs $fsInfo.path; $restarted = $true } catch {}
+    }
+
+    return New-ResultadoLimpeza $true $false '' $backupPath $restarted
+}
+
+# ================================================================
 # DETECÇÃO ICLOUD DRIVE (iCloud for Windows)
 # ================================================================
 # O iCloud for Windows usa a MESMA Cloud Files API do OneDrive (placeholders NTFS +
@@ -735,7 +964,7 @@ function Start-CloudCleaner {
     }
 
     Write-Host "=================================================" -ForegroundColor Cyan
-    Write-Host "  CloudCleaner v1.1.0" -ForegroundColor Cyan
+    Write-Host "  CloudCleaner v1.2.0" -ForegroundColor Cyan
     Write-Host "  Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive" -ForegroundColor Cyan
     Write-Host "=================================================" -ForegroundColor Cyan
     Write-Host "Servidor rodando em: $($script:Prefix)" -ForegroundColor Green
@@ -776,7 +1005,9 @@ function Start-CloudCleaner {
 
                     '^/api/suggestions$' {
                         $info = Get-DiscosDoSistema
-                        Send-Json -Response $response -Object @{ disks = $info.disks; paths = $info.oneDrivePaths; icloudPaths = $info.icloudPaths; googleDrive = $info.googleDrive }
+                        $gd = $info.googleDrive
+                        if ($gd) { $gd | Add-Member -NotePropertyName cleanupConfirmPhrase -NotePropertyValue $script:GDriveCleanupConfirmPhrase -Force }
+                        Send-Json -Response $response -Object @{ disks = $info.disks; paths = $info.oneDrivePaths; icloudPaths = $info.icloudPaths; googleDrive = $gd }
                         break
                     }
 
@@ -821,6 +1052,42 @@ function Start-CloudCleaner {
                         try { Invoke-DeletarStream -Response $response -Caminho $p }
                         catch { Send-SseData -Response $response -Object @{ phase = 'error'; message = $_.Exception.Message } | Out-Null }
                         finally { try { $response.OutputStream.Close() } catch {} }
+                        break
+                    }
+
+                    '^/api/gdrive-cache-cleanup$' {
+                        # Limpeza GUARDADA do content_cache do Google Drive Stream (task #327).
+                        # POST { account: "<pasta da conta em %LOCALAPPDATA%\Google\DriveFS>", confirm: "<frase>" }
+                        if ($method -ne 'POST') {
+                            $status = 405
+                            Send-Json -Response $response -Object @{ error = 'use POST' } -Status 405
+                            break
+                        }
+                        $body = Read-Body -Request $request
+                        $account = if ($body -and $body.account) { [string]$body.account } else { $null }
+                        $confirm = if ($body -and $null -ne $body.confirm) { [string]$body.confirm } else { '' }
+                        if (-not $account) {
+                            $status = 400
+                            Send-Json -Response $response -Object @{ error = 'parâmetro "account" ausente' } -Status 400
+                            break
+                        }
+
+                        $appData = Get-GoogleDriveAppData
+                        if (-not $appData -or -not (Test-Path -LiteralPath $appData)) {
+                            $status = 400
+                            Send-Json -Response $response -Object @{ error = 'Google Drive não detectado nesta máquina.' } -Status 400
+                            break
+                        }
+                        $cacheDir  = Join-Path (Join-Path $appData $account) 'content_cache'
+                        $mountRoot = (@(Get-GoogleDriveStreamVolumes) | Select-Object -First 1).root
+
+                        $result = Invoke-LimpezaGuardadaGoogleDriveCache -CacheDir $cacheDir -Confirm $confirm -MountRoot $mountRoot
+                        if ($result.success) {
+                            Send-Json -Response $response -Object $result
+                        } else {
+                            $status = 409
+                            Send-Json -Response $response -Object $result -Status 409
+                        }
                         break
                     }
 

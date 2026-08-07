@@ -1,6 +1,6 @@
 # ![CloudCleaner](https://img.shields.io/badge/Valebrum-CloudCleaner-blue) CloudCleaner — Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive
 
-![Versão](https://img.shields.io/badge/vers%C3%A3o-1.1.0-success)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-1.2.0-success)
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.x%20%7C%207%2B-5391FE?logo=powershell&logoColor=white)
 ![Plataforma](https://img.shields.io/badge/plataforma-Windows-0078D6?logo=windows&logoColor=white)
 ![Licença](https://img.shields.io/badge/licen%C3%A7a-Propriet%C3%A1ria%20Valebrum%20v1.1-red)
@@ -58,6 +58,7 @@ Desde a **v1.0.1**, o CloudCleaner também **detecta o Google Drive for Desktop*
 | `CloudCleaner.ps1` | Backend PowerShell: análise + servidor HTTP local |
 | `index.html`          | Interface visual (HTML/CSS/JS vanilla) |
 | `tests/Run-Tests.ps1` | Testes (sem dependência de Pester) das funções puras |
+| `tests/GoogleDriveGuardedCleanup.Tests.ps1` | Testes **Pester** da limpeza guardada do cache do Google Drive |
 | `README.md`           | Documentação e instruções do projeto |
 | `changelog.md`        | Histórico de versões |
 | `LICENSE.md`          | Licença Proprietária Valebrum v1.1 |
@@ -171,6 +172,7 @@ O backend expõe endpoints simples em `http://localhost:8080`:
 | `GET`  | `/api/suggestions` | Discos do sistema (uso por volume) + OneDrive, **iCloud Drive** (`icloudPaths`) e **Google Drive** detectados (bloco `googleDrive` com tamanho do `content_cache`) |
 | `GET`  | `/api/free-space?path=<caminho>` | **SSE** — libera espaço (somente-nuvem) com progresso ao vivo. **Recusa** caminhos do Google Drive (`phase: 'error'` com explicação) |
 | `GET`  | `/api/delete?path=<caminho>` | **SSE** — deleta arquivos da pasta com progresso ao vivo |
+| `POST` | `/api/gdrive-cache-cleanup` | Limpeza **GUARDADA** do `content_cache` do Google Drive Stream (ver seção abaixo). Body: `{ account, confirm }` |
 
 > `/api/free-space` e `/api/delete` retornam um stream **Server-Sent Events** (`text/event-stream`),
 > emitindo eventos `{ phase: 'start'|'progress'|'done'|'error', current, total, currentFile, ... }`.
@@ -178,15 +180,64 @@ O backend expõe endpoints simples em `http://localhost:8080`:
 
 ---
 
+## 🧹 Limpeza guardada do cache do Google Drive (content_cache)
+
+O Google Drive Stream não usa a Cloud Files API — o footprint local real é o `content_cache`
+(`%LOCALAPPDATA%\Google\DriveFS\<conta>\content_cache`), e apagá-lo com o DriveFS **rodando**
+pode corromper o estado da sincronização. A partir desta versão, o botão **"🧹 Limpar cache
+guardado"** (visível no card do Google Drive quando há cache pra limpar) faz isso com **3
+salvaguardas**:
+
+1. **Confirmação forte** — é preciso **digitar** a frase exata (`APAGAR CACHE`) no modal; o botão
+   fica desabilitado até o texto bater. A mesma frase é validada de novo no backend (fonte da
+   verdade — a UI é só o primeiro filtro).
+2. **Resguardo do estado antes de apagar** — o `content_cache` **nunca é apagado**: ele é
+   **movido** para uma pasta de backup com timestamp ao lado dele
+   (`content_cache.bak-AAAAMMDD-HHMMSS`). O Google Drive reconstrói o cache sozinho a partir da
+   nuvem quando reinicia; se algo der errado, é só mover o backup de volta manualmente (ou usar
+   `Restore-GoogleDriveCache`).
+3. **Aborta em caso de dúvida** — antes de tocar em qualquer coisa, o backend varre a pasta
+   sincronizada por arquivos escritos numa janela de graça recente (15 min por padrão). Se achar
+   atividade recente, **aborta sem parar o Google Drive nem mexer no cache** — mais vale pedir
+   pra tentar de novo do que arriscar um upload pendente.
+
+Fluxo: **para** o processo `GoogleDriveFS` → confirma que parou → **move** o `content_cache` pro
+backup → **reinicia** o Google Drive. Tudo implementado em `Invoke-LimpezaGuardadaGoogleDriveCache`
+e nas funções auxiliares `Test-CacheCleanupSafe`, `Test-RecentLocalActivity`,
+`Backup-/Restore-GoogleDriveCache`, `Stop-/Start-GoogleDriveFsProcess` — cobertas por Pester em
+`tests/GoogleDriveGuardedCleanup.Tests.ps1` (ver seção Testes).
+
+---
+
 ## 🧪 Testes
 
-Os testes não dependem de Pester (rodam em PowerShell 5.x ou 7+). Eles fazem *dot-source* do script com `-NoServe` (carrega só as funções, sem subir o servidor) e validam as funções puras:
+Dois suites, complementares:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1
-```
+- **`tests/Run-Tests.ps1`** — sem dependência de Pester (roda em PowerShell 5.x ou 7+). Faz
+  *dot-source* do script com `-NoServe` (carrega só as funções, sem subir o servidor) e valida as
+  funções puras de detecção/classificação de nuvem:
 
-Saída esperada: `Resultado: 35 passou, 0 falhou.` (código de saída `0`). Também imprime, de forma informativa, se há Google Drive e iCloud Drive instalados na máquina.
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1
+  ```
+
+  Saída esperada: `Resultado: 35 passou, 0 falhou.` (código de saída `0`). Também imprime, de forma
+  informativa, se há Google Drive e iCloud Drive instalados na máquina.
+
+- **`tests/GoogleDriveGuardedCleanup.Tests.ps1`** — **Pester** (5/6), cobre as 3 salvaguardas da
+  limpeza guardada do cache do Google Drive (confirmação forte, resguardo/reversibilidade via
+  backup+restore, e aborto por atividade recente), com TDD: mais linhas de teste que de
+  implementação. Instalar o Pester (uma vez, por usuário) e rodar:
+
+  ```powershell
+  Install-Module -Name Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+  Invoke-Pester -Path .\tests\GoogleDriveGuardedCleanup.Tests.ps1 -Output Detailed
+  ```
+
+  ⚠️ Todos os testes de I/O rodam contra pastas **falsas** criadas no `TestDrive:` do próprio
+  Pester (apagadas ao final) — nenhum teste toca o `content_cache` real de ninguém, e o processo
+  real do `GoogleDriveFS` nunca é parado/iniciado pelos testes (é sempre injetado via
+  scriptblock fake no orquestrador).
 
 ---
 

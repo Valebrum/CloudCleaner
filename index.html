@@ -247,7 +247,7 @@
     <div style="flex:1">
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <h1>CloudCleaner</h1>
-        <span class="ver">v1.1.0</span>
+        <span class="ver">v1.2.0</span>
       </div>
       <p class="sub">Visualize tamanho lógico vs. local e libere espaço do OneDrive com um clique. Detecta também iCloud Drive e Google Drive (Stream/Espelho).</p>
     </div>
@@ -311,6 +311,7 @@
     <h3 id="modalTitle">Confirmar</h3>
     <p id="modalMsg"></p>
     <div class="path-box" id="modalPath"></div>
+    <input type="text" id="modalTypedInput" class="path-box" style="display:none; width:100%; box-sizing:border-box;" autocomplete="off" spellcheck="false">
     <div class="modal-actions">
       <button class="ghost" id="modalCancel">Cancelar</button>
       <button id="modalConfirm">Confirmar</button>
@@ -380,18 +381,36 @@ async function apiPost(url, body) {
 
 // ---------- modal ----------
 let modalResolve = null;
-function confirmModal({ title, msg, path, confirmText = 'Confirmar', danger = false }) {
+// requireTypedConfirm: se informado (string), exige que o usuário DIGITE exatamente esse
+// texto no campo antes do botão "Confirmar" habilitar — a "confirmação forte" pedida para
+// ações que apagam dado de verdade (ex.: limpeza guardada do cache do Google Drive).
+function confirmModal({ title, msg, path, confirmText = 'Confirmar', danger = false, requireTypedConfirm = null }) {
   $('modalTitle').textContent = title;
   $('modalMsg').innerHTML = msg;
-  $('modalPath').textContent = path;
+  $('modalPath').textContent = path || '';
   const cb = $('modalConfirm');
   cb.textContent = confirmText;
   cb.className = danger ? 'btn-delete' : '';
   cb.style.background = danger ? 'var(--red)' : 'var(--accent-2)';
+
+  const input = $('modalTypedInput');
+  input.oninput = null;
+  if (requireTypedConfirm) {
+    input.style.display = '';
+    input.value = '';
+    input.placeholder = `Digite "${requireTypedConfirm}" para confirmar`;
+    cb.disabled = true;
+    input.oninput = () => { cb.disabled = (input.value !== requireTypedConfirm); };
+  } else {
+    input.style.display = 'none';
+    cb.disabled = false;
+  }
+
   $('overlay').classList.add('show');
+  if (requireTypedConfirm) setTimeout(() => input.focus(), 50);
   return new Promise((res) => { modalResolve = res; });
 }
-$('modalConfirm').addEventListener('click', () => { $('overlay').classList.remove('show'); modalResolve && modalResolve(true); });
+$('modalConfirm').addEventListener('click', () => { if ($('modalConfirm').disabled) return; $('overlay').classList.remove('show'); modalResolve && modalResolve(true); });
 $('modalCancel').addEventListener('click', () => { $('overlay').classList.remove('show'); modalResolve && modalResolve(false); });
 $('overlay').addEventListener('click', (e) => { if (e.target === $('overlay')) { $('overlay').classList.remove('show'); modalResolve && modalResolve(false); } });
 
@@ -685,6 +704,50 @@ async function deleteFolder(f) {
   handleResult(r, 'deletar');
 }
 
+// Limpeza GUARDADA do content_cache do Google Drive Stream (conta específica). Não usa
+// o mecanismo de progresso (SSE) das outras ações — é uma operação única no backend com
+// 3 salvaguardas: confirmação forte (aqui), resguardo do estado, e checagem de atividade
+// local recente (feita no servidor, que pode abortar mesmo depois de confirmado).
+async function cleanGoogleDriveCache(account, label) {
+  const phrase = (gdriveInfo && gdriveInfo.cleanupConfirmPhrase) || 'APAGAR CACHE';
+  const ok = await confirmModal({
+    title: '🧹 Limpar cache guardado do Google Drive',
+    msg: 'O Google Drive será <b>parado</b>, o cache local (<b>content_cache</b>) da conta '
+       + `<b>${escapeHtml(label)}</b> será <b>guardado</b> (não apagado — vira um backup ao lado dele) `
+       + 'e o Google Drive é <b>reiniciado</b> em seguida (ele reconstrói o cache sozinho a partir da nuvem).<br><br>'
+       + '<span class="danger">Se houver alguma edição sua ainda não sincronizada, a limpeza é ABORTADA automaticamente '
+       + 'sem mexer em nada.</span> Ainda assim, confira antes que o Google Drive mostra "Atualizado" na bandeja do Windows.',
+    confirmText: 'Limpar cache guardado',
+    danger: true,
+    requireTypedConfirm: phrase
+  });
+  if (!ok) return;
+
+  try {
+    // Não usa apiPost() aqui: essa rota devolve 200 (sucesso) ou 409 (abortado por
+    // segurança) com um corpo descritivo próprio ({ success, aborted, reason, ... }),
+    // diferente do padrão { error } das demais rotas — tratamos as duas respostas.
+    const resp = await fetch('/api/gdrive-cache-cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account, confirm: phrase })
+    });
+    const r = await resp.json();
+    if (resp.status === 400) {
+      toast(r.error || 'Requisição inválida.', 'err');
+    } else if (r.aborted) {
+      toast(r.reason || 'Limpeza abortada por segurança.', 'warn');
+    } else if (r.success) {
+      toast('Cache guardado com sucesso. O Google Drive vai reconstruí-lo aos poucos.', 'ok');
+    } else {
+      toast('Resposta inesperada do servidor.', 'err');
+    }
+  } catch (e) {
+    toast('Erro ao limpar cache: ' + e.message, 'err');
+  }
+  await loadSuggestions();
+}
+
 async function freeAll() {
   if (!currentData || !currentData.subfolders.length) return;
   if (currentData.cloud && currentData.cloud.freeable === false) {
@@ -742,6 +805,24 @@ async function loadSuggestions() {
     head.innerHTML = '<span class="lbl">💽 Discos do sistema</span>'
       + `<span style="font-size:12px"><span style="color:var(--cloud)">☁️ OneDrive</span>${icLabel}${gdLabel}</span>`;
     el.appendChild(head);
+
+    // Limpeza guardada do content_cache, por conta do Google Drive (só aparece se
+    // houver cache para limpar). Ação GUARDADA (3 salvaguardas) — ver cleanGoogleDriveCache().
+    const gdAccounts = asArray(gdriveInfo && gdriveInfo.accounts).filter(a => a && a.cacheBytes > 0);
+    if (gdAccounts.length) {
+      const cleanupBox = document.createElement('div');
+      cleanupBox.className = 'dc-paths';
+      cleanupBox.style.marginBottom = '10px';
+      gdAccounts.forEach(a => {
+        const btn = document.createElement('button');
+        btn.className = 'ghost small';
+        btn.textContent = `🧹 Limpar cache guardado — conta ${a.account} (${a.cacheFormatted})`;
+        btn.title = 'Para o Google Drive, guarda (não apaga) o cache local desta conta e reinicia.';
+        btn.addEventListener('click', () => cleanGoogleDriveCache(a.account, a.account));
+        cleanupBox.appendChild(btn);
+      });
+      el.appendChild(cleanupBox);
+    }
 
     const grid = document.createElement('div');
     grid.className = 'disks';
