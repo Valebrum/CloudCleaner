@@ -99,6 +99,35 @@ Assert-False (Test-IsPlausibleWindowsPath $null)                     'null não 
 Assert-False (Test-IsPlausibleWindowsPath 'iCloud Drive')            'caminho relativo (sem letra de unidade) não é válido'
 Assert-False (Test-IsPlausibleWindowsPath '/home/nelson/iCloud')     'caminho estilo Unix não é válido'
 
+Write-Host "=== Test-ShouldAutoShutdown (watchdog de encerramento por ausência de sinal — task #2760) ===" -ForegroundColor Cyan
+# Decisão PURA (sem I/O, sem ler relógio internamente): recebe LastSignalUtc/NowUtc/Timeout
+# injetados, igual ao padrão já usado em Test-RecentLocalActivity/Test-CacheCleanupSafe.
+$wdNow = Get-Date '2026-08-08T12:00:00Z'
+Assert-False (Test-ShouldAutoShutdown -LastSignalUtc $wdNow -NowUtc $wdNow -TimeoutSeconds 20)                    'sinal chegou agora mesmo -> não encerra'
+Assert-False (Test-ShouldAutoShutdown -LastSignalUtc $wdNow -NowUtc ($wdNow.AddSeconds(19)) -TimeoutSeconds 20)   'dentro da janela (19s de 20s) -> não encerra'
+Assert-True  (Test-ShouldAutoShutdown -LastSignalUtc $wdNow -NowUtc ($wdNow.AddSeconds(20)) -TimeoutSeconds 20)   'exatamente no limite (20s) -> encerra'
+Assert-True  (Test-ShouldAutoShutdown -LastSignalUtc $wdNow -NowUtc ($wdNow.AddSeconds(45)) -TimeoutSeconds 20)   'bem além do limite -> encerra'
+Assert-False (Test-ShouldAutoShutdown -LastSignalUtc $wdNow -NowUtc ($wdNow.AddSeconds(-5)) -TimeoutSeconds 20)   'relógio "andou pra trás" não gera falso positivo (idade negativa)'
+
+Write-Host "=== Invoke-AbrirPastaNoExplorer (extra: abrir pasta no Explorador — task #2760) ===" -ForegroundColor Cyan
+# StartProcess é injetável (mesmo padrão de Start-/Stop-GoogleDriveFsProcess): o teste
+# nunca dispara um processo real, só confirma o gate de caminho + o repasse do argumento.
+$tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ('cloudcleaner-test-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+try {
+    $script:openFolderCalledWith = $null
+    $fakeStartProcess = { param($p) $script:openFolderCalledWith = $p }
+
+    Invoke-AbrirPastaNoExplorer -Caminho $tmpDir -StartProcess $fakeStartProcess
+    Assert-Equal $tmpDir $script:openFolderCalledWith 'caminho válido -> aciona o processo com o mesmo caminho'
+
+    $threw = $false
+    try { Invoke-AbrirPastaNoExplorer -Caminho (Join-Path $tmpDir 'nao-existe') -StartProcess $fakeStartProcess } catch { $threw = $true }
+    Assert-True $threw 'caminho inexistente -> lança erro (guarda antes de acionar o processo)'
+} finally {
+    Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "=== Detecção ao vivo (informativo; não falha o suite) ===" -ForegroundColor Cyan
 # Best-effort: em ambiente não-Windows (ex.: CI/dev fora do Windows) variáveis como
 # $env:LOCALAPPDATA/$env:USERPROFILE e o registro não existem — isso é esperado e não
