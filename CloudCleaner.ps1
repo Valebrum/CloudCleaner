@@ -1,8 +1,8 @@
 # CloudCleaner - Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive
 # Idealizador: Nelson Brum
 # Desenvolvedor: Claude + Nelson
-# Versão: 1.2.0
-# Data: 2026-08-07
+# Versão: 1.3.0
+# Data: 2026-08-08
 #
 # O que faz:
 #   Analisa pastas (OneDrive-friendly), comparando tamanho LÓGICO (total na nuvem)
@@ -658,6 +658,61 @@ function Invoke-LimpezaGuardadaGoogleDriveCache {
 }
 
 # ================================================================
+# ENCERRAMENTO AUTOMÁTICO (a aba fecha -> o programa se desliga sozinho)
+# ================================================================
+# Problema real (task #2760): o script só parava quando alguém fechava a janela do
+# PowerShell na mão — fechar só a aba do navegador não avisava nada, e o processo
+# ficava rodando à toa, ocupando a porta 8080. Duas camadas, as duas dentro da MESMA
+# arquitetura (HttpListener + HTML/JS puro, sem framework novo):
+#
+#   1) SINAL EXPLÍCITO: o navegador avisa quando a aba fecha de verdade (evento
+#      'pagehide' + navigator.sendBeacon para /api/shutdown, ver index.html) — o
+#      servidor recebe o aviso e encerra na hora.
+#   2) GUARDA POR AUSÊNCIA DE SINAL: o navegador manda um "heartbeat" periódico
+#      (/api/heartbeat) enquanto a aba está aberta. Se o navegador travar ou for
+#      fechado à força (sem o evento 1 disparar), os heartbeats param de chegar —
+#      o servidor percebe o silêncio e se desliga sozinho depois de alguns segundos,
+#      sem depender de mais nenhum aviso.
+#
+# Test-ShouldAutoShutdown é a decisão PURA (sem I/O, sem ler relógio internamente),
+# no mesmo padrão de Test-RecentLocalActivity/Test-CacheCleanupSafe: recebe o
+# "agora" e o último sinal como parâmetros, para ser 100% determinística em teste.
+
+# Janela de silêncio (segundos) sem heartbeat antes do encerramento automático. O
+# frontend manda heartbeat a cada 5s (ver index.html) — 20s tolera algumas falhas
+# de rede/GC sem derrubar o servidor à toa.
+$script:HeartbeatTimeoutSeconds = 20
+
+# (PURA) Decide se o servidor deve encerrar por ausência de sinal do navegador.
+function Test-ShouldAutoShutdown {
+    param(
+        [Parameter(Mandatory)][DateTime]$LastSignalUtc,
+        [Parameter(Mandatory)][DateTime]$NowUtc,
+        [Parameter(Mandatory)][int]$TimeoutSeconds
+    )
+    $elapsed = ($NowUtc - $LastSignalUtc).TotalSeconds
+    if ($elapsed -lt 0) { return $false }  # relógio "andou pra trás": nunca conta como silêncio
+    return ($elapsed -ge $TimeoutSeconds)
+}
+
+# ================================================================
+# EXTRA: ABRIR PASTA NO EXPLORADOR DE ARQUIVOS (sugestão do Nelson, task #2760)
+# ================================================================
+# Botão na linha de subpastas que abre o Explorador do Windows já na pasta selecionada.
+# StartProcess é injetável (mesmo padrão de Start-/Stop-GoogleDriveFsProcess) — em teste
+# nunca dispara um processo real, só confirma o gate de caminho + o repasse do argumento.
+function Invoke-AbrirPastaNoExplorer {
+    param(
+        [Parameter(Mandatory)][string]$Caminho,
+        [scriptblock]$StartProcess = { param($p) Start-Process -FilePath 'explorer.exe' -ArgumentList @($p) | Out-Null }
+    )
+    if (-not (Test-Path -LiteralPath $Caminho)) {
+        throw "Caminho inválido: $Caminho"
+    }
+    & $StartProcess $Caminho
+}
+
+# ================================================================
 # DETECÇÃO ICLOUD DRIVE (iCloud for Windows)
 # ================================================================
 # O iCloud for Windows usa a MESMA Cloud Files API do OneDrive (placeholders NTFS +
@@ -964,12 +1019,12 @@ function Start-CloudCleaner {
     }
 
     Write-Host "=================================================" -ForegroundColor Cyan
-    Write-Host "  CloudCleaner v1.2.0" -ForegroundColor Cyan
+    Write-Host "  CloudCleaner v1.3.0" -ForegroundColor Cyan
     Write-Host "  Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive" -ForegroundColor Cyan
     Write-Host "=================================================" -ForegroundColor Cyan
     Write-Host "Servidor rodando em: $($script:Prefix)" -ForegroundColor Green
     Write-Host "Abrindo o navegador..." -ForegroundColor Green
-    Write-Host "Pressione Ctrl+C nesta janela para encerrar." -ForegroundColor Yellow
+    Write-Host "Feche a aba do navegador para encerrar (ou Ctrl+C nesta janela)." -ForegroundColor Yellow
     Write-Host "-------------------------------------------------"
 
     # Abre o navegador automaticamente (a menos que -NoBrowser)
@@ -979,9 +1034,33 @@ function Start-CloudCleaner {
         Write-Host "Modo -NoBrowser: abra manualmente em $($script:Prefix)" -ForegroundColor Yellow
     }
 
+    # Encerramento automático (task #2760): $script:LastSignalUtc começa em "agora" (dá
+    # tempo do navegador abrir e mandar o 1º heartbeat antes da guarda de silêncio valer).
+    # /api/heartbeat atualiza o sinal; /api/shutdown (chamado no fechamento da aba) pede
+    # a saída imediata via $script:ShutdownRequested.
+    $script:LastSignalUtc      = [DateTime]::UtcNow
+    $script:ShutdownRequested  = $false
+    $watchdogPollMs            = 1000
+
     try {
+        $pendingIar = $null
         while ($listener.IsListening) {
-            $context  = $listener.GetContext()
+            # Aceita a próxima conexão de forma assíncrona e espera em janelas curtas
+            # (em vez de bloquear para sempre em GetContext()) para poder checar, a cada
+            # janela sem requisição nenhuma, se o navegador sumiu (guarda de silêncio).
+            if (-not $pendingIar) { $pendingIar = $listener.BeginGetContext($null, $null) }
+            $signaled = $pendingIar.AsyncWaitHandle.WaitOne($watchdogPollMs)
+
+            if (-not $signaled) {
+                if (Test-ShouldAutoShutdown -LastSignalUtc $script:LastSignalUtc -NowUtc ([DateTime]::UtcNow) -TimeoutSeconds $script:HeartbeatTimeoutSeconds) {
+                    Write-Host ("Sem sinal do navegador há {0}s — encerrando sozinho." -f $script:HeartbeatTimeoutSeconds) -ForegroundColor Yellow
+                    break
+                }
+                continue
+            }
+
+            $context  = $listener.EndGetContext($pendingIar)
+            $pendingIar = $null
             $request  = $context.Request
             $response = $context.Response
             $path     = $request.Url.AbsolutePath
@@ -1091,6 +1170,48 @@ function Start-CloudCleaner {
                         break
                     }
 
+                    '^/api/heartbeat$' {
+                        # Chamado periodicamente pelo navegador (aba aberta) — task #2760.
+                        # Alimenta a guarda de silêncio (Test-ShouldAutoShutdown); nenhuma
+                        # ação além de marcar "ainda tem alguém ouvindo".
+                        $script:LastSignalUtc = [DateTime]::UtcNow
+                        Send-Json -Response $response -Object @{ ok = $true }
+                        break
+                    }
+
+                    '^/api/shutdown$' {
+                        # Chamado no fechamento da aba (navigator.sendBeacon, evento 'pagehide')
+                        # — sinal EXPLÍCITO, mais rápido que esperar a guarda de silêncio.
+                        Send-Json -Response $response -Object @{ ok = $true }
+                        $script:ShutdownRequested = $true
+                        break
+                    }
+
+                    '^/api/open-folder$' {
+                        # Extra sugerido pelo Nelson (task #2760): abre o Explorador de
+                        # Arquivos já na pasta selecionada. POST { path: "<pasta>" }.
+                        if ($method -ne 'POST') {
+                            $status = 405
+                            Send-Json -Response $response -Object @{ error = 'use POST' } -Status 405
+                            break
+                        }
+                        $body = Read-Body -Request $request
+                        $p = if ($body -and $body.path) { [string]$body.path } else { $null }
+                        if (-not $p) {
+                            $status = 400
+                            Send-Json -Response $response -Object @{ error = 'parâmetro "path" ausente' } -Status 400
+                            break
+                        }
+                        try {
+                            Invoke-AbrirPastaNoExplorer -Caminho $p
+                            Send-Json -Response $response -Object @{ ok = $true }
+                        } catch {
+                            $status = 400
+                            Send-Json -Response $response -Object @{ error = $_.Exception.Message } -Status 400
+                        }
+                        break
+                    }
+
                     default {
                         $status = 404
                         Send-Json -Response $response -Object @{ error = 'rota não encontrada' } -Status 404
@@ -1102,6 +1223,10 @@ function Start-CloudCleaner {
             }
 
             Write-Log -Method $method -Path $path -Status $status
+
+            # Sinal explícito de fechamento (/api/shutdown) já respondeu ao navegador;
+            # agora sai do loop e deixa o bloco finally encerrar o listener.
+            if ($script:ShutdownRequested) { break }
         }
     } finally {
         if ($listener.IsListening) { $listener.Stop() }

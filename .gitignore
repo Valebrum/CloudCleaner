@@ -22,3 +22,6 @@ $RECYCLE.BIN/
 # Saídas locais de teste
 /test-output/
 /tmp/
+
+# Build do instalador (gerado pelo Inno Setup / CI, não commitado)
+/installer/dist/

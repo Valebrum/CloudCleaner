@@ -139,7 +139,8 @@
   .cloud-note.stream b { color: var(--green); }
 
   /* ---- breadcrumb ---- */
-  .crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 13px; margin-top: 4px; }
+  .crumbs-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 4px; }
+  .crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 13px; flex: 1; }
   .crumbs .seg { color: var(--cloud); cursor: pointer; }
   .crumbs .seg:hover { text-decoration: underline; }
   .crumbs .sep { color: var(--muted); }
@@ -247,7 +248,7 @@
     <div style="flex:1">
       <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
         <h1>CloudCleaner</h1>
-        <span class="ver">v1.2.0</span>
+        <span class="ver">v1.3.0</span>
       </div>
       <p class="sub">Visualize tamanho lógico vs. local e libere espaço do OneDrive com um clique. Detecta também iCloud Drive e Google Drive (Stream/Espelho).</p>
     </div>
@@ -260,7 +261,10 @@
       <button id="scanBtn">🔍 Analisar</button>
     </div>
     <div class="suggestions" id="suggestions"></div>
-    <div class="crumbs" id="crumbs"></div>
+    <div class="crumbs-row">
+      <div class="crumbs" id="crumbs"></div>
+      <button id="openFolderBtn" class="ghost small" style="display:none">📂 Abrir pasta</button>
+    </div>
     <div id="loading"><span class="spinner"></span> Analisando pasta, aguarde…</div>
   </div>
 
@@ -297,7 +301,7 @@
   </div>
 
   <footer>
-    CloudCleaner v1.0.1 — Idealizador: Nelson Brum · Desenvolvido por Claude + Nelson ·
+    CloudCleaner v1.3.0 — Idealizador: Nelson Brum · Desenvolvido por Claude + Nelson ·
     <a href="https://github.com/Valebrum/CloudCleaner" target="_blank">GitHub</a><br>
     © 2026 Grupo Valebrum — Licença Proprietária v1.1
   </footer>
@@ -379,6 +383,17 @@ async function apiPost(url, body) {
   return j;
 }
 
+// Extra sugerido pelo Nelson (task #2760): abre o Explorador de Arquivos do Windows
+// já na pasta selecionada (o navegador não consegue fazer isso sozinho por segurança —
+// por isso passa pelo backend, que roda no mesmo PC).
+async function openFolderInExplorer(path) {
+  try {
+    await apiPost('/api/open-folder', { path });
+  } catch (e) {
+    toast('Não consegui abrir a pasta: ' + e.message, 'err');
+  }
+}
+
 // ---------- modal ----------
 let modalResolve = null;
 // requireTypedConfirm: se informado (string), exige que o usuário DIGITE exatamente esse
@@ -418,7 +433,12 @@ $('overlay').addEventListener('click', (e) => { if (e.target === $('overlay')) {
 function renderCrumbs(path) {
   const el = $('crumbs');
   el.innerHTML = '';
-  if (!path) return;
+  // Extra sugerido pelo Nelson (task #2760): botão que abre o Explorador de Arquivos
+  // já na pasta selecionada, na mesma linha que mostra as subpastas (breadcrumb).
+  const openBtn = $('openFolderBtn');
+  if (!path) { openBtn.style.display = 'none'; return; }
+  openBtn.style.display = '';
+  openBtn.onclick = () => openFolderInExplorer(path);
   const parts = path.split(/[\\/]+/).filter(Boolean);
   let accum = '';
   parts.forEach((part, i) => {
@@ -897,6 +917,25 @@ async function loadSuggestions() {
 $('scanBtn').addEventListener('click', () => scan($('pathInput').value.trim()));
 $('pathInput').addEventListener('keydown', e => { if (e.key === 'Enter') scan($('pathInput').value.trim()); });
 $('freeAllBtn').addEventListener('click', freeAll);
+
+// ---------- encerramento automático (task #2760) ----------
+// O programa não tem mais que ficar rodando à toa depois que a aba fecha. Duas partes,
+// as duas do lado do backend (CloudCleaner.ps1) que decide de fato encerrar:
+//   1) Heartbeat periódico: avisa "ainda tem alguém ouvindo" enquanto a aba está aberta.
+//      Sem receber heartbeat por um tempo, o servidor se desliga sozinho (guarda de
+//      segurança para navegador travado / fechado à força).
+//   2) Sinal explícito no fechamento real da aba (pagehide, com fallback em beforeunload):
+//      manda o aviso de encerrar na hora, sem esperar o heartbeat parar. sendBeacon é o
+//      jeito confiável de mandar isso mesmo com a página sendo descartada.
+setInterval(() => {
+  fetch('/api/heartbeat', { method: 'POST', body: '', keepalive: true }).catch(() => {});
+}, 5000);
+
+function signalShutdown() {
+  try { navigator.sendBeacon('/api/shutdown', new Blob([], { type: 'text/plain' })); } catch (e) {}
+}
+window.addEventListener('pagehide', signalShutdown);
+window.addEventListener('beforeunload', signalShutdown);
 
 loadSuggestions();
 </script>

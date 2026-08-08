@@ -7,7 +7,35 @@ seguindo [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.2.0] – 2026-08-07
+## [1.3.0] – 2026-08-08
+Instalador Windows + o programa aprende a se desligar sozinho. (Task TaskHub #2760, Opção B.)
+
+### Adicionado
+- **Encerramento automático**: o servidor agora se desliga sozinho quando a aba do
+  navegador fecha — resolve o problema real de o `.ps1` continuar rodando (ocupando a
+  porta 8080) até alguém fechar a janela do PowerShell na mão. Duas camadas:
+  - Sinal explícito: `pagehide`/`beforeunload` no navegador disparam
+    `navigator.sendBeacon('/api/shutdown')`, e o servidor encerra na hora.
+  - Guarda de segurança por ausência de sinal: o navegador manda um heartbeat a cada 5s
+    (`/api/heartbeat`); sem heartbeat por 20s (navegador travado/fechado à força), o
+    servidor percebe o silêncio e se desliga sozinho (`Test-ShouldAutoShutdown`, pura e
+    testada — mesmo padrão de `Test-RecentLocalActivity`/`Test-CacheCleanupSafe`).
+  - Implementado trocando o `HttpListener.GetContext()` bloqueante por
+    `BeginGetContext`/`EndGetContext` + `WaitOne` em janelas de 1s — dá ao servidor a
+    chance de checar a guarda de silêncio sem exigir threads/timers novos.
+- **Instalador Windows** (`installer/CloudCleaner.iss`, Inno Setup): copia os arquivos,
+  cria um launcher que roda o programa **sem a janela preta do PowerShell** aparecendo
+  (`installer/CloudCleaner.vbs`, com ícone próprio), e oferece **duas checkboxes**
+  independentes — atalho na Área de Trabalho **e/ou** no Menu Iniciar — igual a qualquer
+  instalador padrão do Windows.
+- **Extra**: botão "📂 Abrir pasta" na linha do breadcrumb (subpastas) que abre o
+  Explorador de Arquivos do Windows já na pasta selecionada
+  (`Invoke-AbrirPastaNoExplorer`, novo endpoint `POST /api/open-folder`).
+- **Testes**: 12 novos testes em `tests/Run-Tests.ps1` (watchdog de encerramento +
+  abrir pasta), rodando puro/sem I/O real (mesmo padrão DI de sempre) — suíte total
+  sobe para 42 (era 35, zero Pester).
+
+
 Limpeza **GUARDADA** do `content_cache` do Google Drive Stream. (Follow-up de #17/PR #8.)
 
 ### Adicionado
