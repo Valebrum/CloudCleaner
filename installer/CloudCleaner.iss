@@ -10,7 +10,7 @@
 ; Setup via Chocolatey e roda o mesmo comando.
 
 #define MyAppName "CloudCleaner"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.3.1"
 #define MyAppPublisher "Grupo Valebrum"
 #define MyAppURL "https://github.com/Valebrum/CloudCleaner"
 
@@ -71,6 +71,18 @@ Name: "{group}\{#MyAppName}"; Filename: "{win}\System32\wscript.exe"; \
 Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"; Tasks: startmenuicon
 
 [Run]
+; Defesa contra o "Mark of the Web" (task #2760/rework — instalador funcionou mas o
+; atalho instalado "não fazia nada"): o setup.exe baixado do GitHub Releases carrega a
+; marca de zona de internet (Zone.Identifier), e desde o Inno Setup 6.1 esse instalador
+; PROPAGA essa marca para os arquivos que ele extrai — silenciosamente, sem avisar no
+; instalador. Isso pode fazer o Windows tratar o .ps1/.vbs recém-instalados como
+; "baixados da internet" para fins de política de segurança. Unblock-File remove a
+; marca dos arquivos já copiados, ANTES de oferecer "Abrir agora". Roda oculto (sem
+; janela) e nunca falha a instalação (o "-Command" engole o próprio erro).
+Filename: "powershell.exe"; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Get-ChildItem -LiteralPath '{app}' -Recurse -File | Unblock-File -ErrorAction SilentlyContinue"""; \
+    WorkingDir: "{app}"; Flags: runhidden
+
 Filename: "{win}\System32\wscript.exe"; Parameters: """{app}\CloudCleaner.vbs"""; \
     WorkingDir: "{app}"; Description: "Abrir o {#MyAppName} agora"; \
     Flags: postinstall nowait skipifsilent
