@@ -1,8 +1,8 @@
 # CloudCleaner - Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive
 # Idealizador: Nelson Brum
 # Desenvolvedor: Claude + Nelson
-# Versão: 1.3.0
-# Data: 2026-08-08
+# Versão: 1.3.1
+# Data: 2026-08-11
 #
 # O que faz:
 #   Analisa pastas (OneDrive-friendly), comparando tamanho LÓGICO (total na nuvem)
@@ -41,12 +41,86 @@ param(
 # ================================================================
 # CONFIGURAÇÃO INICIAL
 # ================================================================
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
 $script:Port    = 8080
 $script:Prefix  = "http://localhost:$($script:Port)/"
 $script:Root    = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+# [Console]::OutputEncoding pode LANÇAR (System.IO.IOException "The handle is invalid")
+# quando o processo é iniciado sem console de verdade anexado — é exatamente o caso do
+# launcher instalado (task #2760/rework): wscript.exe chama "powershell.exe -WindowStyle
+# Hidden", e em algumas versões/condições do Windows isso resulta em nenhum console
+# alocado, não um console "só escondido". Como essa é a 1ª instrução do script, uma
+# exceção aqui matava o processo por completo ANTES de qualquer log/servidor — exatamente
+# o sintoma "instalei, cliquei, e não aconteceu nada". Cosmético (só afeta acentuação no
+# console, que ninguém vê quando roda oculto) — não pode ser fatal.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+
+# --- Diagnóstico visível (task #2760/rework: "instalei mas nada aconteceu") ------------
+# O launcher roda 100% oculto (sem janela de PowerShell) — todo Write-Host, todo erro,
+# tudo que antes só aparecia (ou não) numa janela preta agora também vai para um arquivo
+# de log ao lado do executável, e falhas fatais mostram uma caixa de mensagem visível.
+# Sem isso, "nada acontecer" na tela do usuário podia ser, na real, um erro qualquer
+# (porta 8080 ocupada, permissão negada, etc.) morrendo em silêncio total.
+function Get-CloudCleanerLogDir {
+    # {app} pode ter sido instalado em local sem permissão de escrita pro usuário atual
+    # (ex.: Program Files, se o instalador rodou elevado mas o app roda sem elevação
+    # depois). Tenta gravar no diretório do script; se não der, cai para uma pasta do
+    # usuário que É sempre gravável.
+    $candidates = @($script:Root)
+    if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA 'CloudCleaner') }
+    $candidates += (Join-Path ([System.IO.Path]::GetTempPath()) 'CloudCleaner')
+    foreach ($dir in $candidates) {
+        if (-not $dir) { continue }
+        try {
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null }
+            $probe = Join-Path $dir ('.write-test-' + [guid]::NewGuid())
+            [IO.File]::WriteAllText($probe, 'ok')
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+            return $dir
+        } catch { continue }
+    }
+    return $null
+}
+$script:LogDir      = Get-CloudCleanerLogDir
+$script:LogPath      = if ($script:LogDir) { Join-Path $script:LogDir 'CloudCleaner.log' } else { $null }
+$script:ErrorLogPath = if ($script:LogDir) { Join-Path $script:LogDir 'CloudCleaner-error.log' } else { $null }
+
+# Anexa uma linha ao log de erro — NUNCA lança (log é um "melhor esforço": se até logar
+# falhar, o programa não pode travar por causa disso).
+function Write-CloudCleanerErrorLog {
+    param([string]$Message)
+    if (-not $script:ErrorLogPath) { return }
+    try {
+        $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+        Add-Content -LiteralPath $script:ErrorLogPath -Value "[$ts] $Message" -Encoding UTF8
+    } catch {}
+}
+
+# Mostra o erro de um jeito que o usuário REALMENTE vê (o programa roda sem nenhuma
+# janela — sem isso, um erro fatal é indistinguível de "nada aconteceu"). Best-effort:
+# se a MessageBox não puder ser exibida (ex.: sem sessão gráfica), o log de erro
+# continua sendo a rede de segurança.
+function Show-CloudCleanerFatalError {
+    param([string]$Context, $ErrorRecord)
+
+    $detail  = if ($ErrorRecord) { $ErrorRecord.Exception.Message } else { 'erro desconhecido' }
+    $logLine = "ERRO FATAL em '$Context': $detail"
+    if ($ErrorRecord -and $ErrorRecord.ScriptStackTrace) { $logLine += "`n$($ErrorRecord.ScriptStackTrace)" }
+    Write-CloudCleanerErrorLog -Message $logLine
+
+    $userMsg = "O CloudCleaner encontrou um erro e não conseguiu iniciar.`n`n$detail"
+    if ($script:ErrorLogPath) { $userMsg += "`n`nDetalhes completos em:`n$script:ErrorLogPath" }
+
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        [System.Windows.Forms.MessageBox]::Show($userMsg, 'CloudCleaner - Erro ao iniciar', `
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    } catch {
+        # Sem GUI disponível (ex.: rodando em CI/headless) — o log de erro já registrou.
+    }
+}
 
 # Frase de confirmação forte exigida pela limpeza GUARDADA do cache do Google Drive
 # Stream (ver bloco "LIMPEZA GUARDADA DO CACHE"). Fica num só lugar (backend) e a UI
@@ -55,13 +129,20 @@ $script:GDriveCleanupConfirmPhrase = 'APAGAR CACHE'
 
 # API nativa Win32 para definir atributos de nuvem (UNPINNED/PINNED), que o enum
 # [System.IO.FileAttributes] do .NET rejeita. É exatamente o que o attrib.exe faz.
-if (-not ('Win32.NativeFs' -as [type])) {
-    Add-Type -Namespace Win32 -Name NativeFs -MemberDefinition @'
+# Envolvido em try/catch: se a compilação do P/Invoke falhar (ex.: AMSI/antivírus
+# bloqueando Add-Type), o erro fica registrado em vez de matar o processo inteiro —
+# o servidor HTTP e as demais funções (análise, listagem) não dependem deste tipo.
+try {
+    if (-not ('Win32.NativeFs' -as [type])) {
+        Add-Type -Namespace Win32 -Name NativeFs -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Unicode)]
 public static extern bool SetFileAttributesW(string lpFileName, uint dwFileAttributes);
 [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true, CharSet=System.Runtime.InteropServices.CharSet.Unicode)]
 public static extern uint GetFileAttributesW(string lpFileName);
 '@
+    }
+} catch {
+    Write-CloudCleanerErrorLog -Message "Falha ao registrar Win32.NativeFs (liberação de espaço por atributo pode não funcionar): $($_.Exception.Message)"
 }
 
 # ================================================================
@@ -1006,20 +1087,34 @@ function Write-Log {
 }
 
 function Start-CloudCleaner {
-    $listener = New-Object System.Net.HttpListener
-    $listener.Prefixes.Add($script:Prefix)
-
-    try {
-        $listener.Start()
-    } catch {
-        Write-Host "ERRO ao iniciar o servidor em $($script:Prefix)" -ForegroundColor Red
-        Write-Host "Detalhe: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "Dica: a porta $($script:Port) pode estar em uso. Feche o outro programa e tente novamente." -ForegroundColor Yellow
-        return
+    # Transcript: captura TAMBÉM o que Write-Host escreve (Write-Host vai para o host,
+    # não para o stream de saída — redirecionar ">" o processo NÃO captura Write-Host;
+    # Start-Transcript captura). É o log "narrativo" completo de uma execução, ao lado
+    # do CloudCleaner-error.log (só falhas). Best-effort: se não conseguir (ex.: outra
+    # transcrição já em andamento, diretório sem permissão), segue sem travar o app.
+    $script:TranscriptStarted = $false
+    if ($script:LogPath) {
+        try { Start-Transcript -Path $script:LogPath -Append -ErrorAction Stop | Out-Null; $script:TranscriptStarted = $true } catch {}
     }
 
+    try {
+        $listener = New-Object System.Net.HttpListener
+        $listener.Prefixes.Add($script:Prefix)
+
+        try {
+            $listener.Start()
+        } catch {
+            Write-Host "ERRO ao iniciar o servidor em $($script:Prefix)" -ForegroundColor Red
+            Write-Host "Detalhe: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "Dica: a porta $($script:Port) pode estar em uso. Feche o outro programa e tente novamente." -ForegroundColor Yellow
+            # Sem isso, essa falha era 100% muda pro usuário: roda oculto, sem janela
+            # nenhuma pra mostrar o Write-Host acima — "instalei e não abriu nada".
+            Show-CloudCleanerFatalError -Context 'HttpListener.Start' -ErrorRecord $_
+            return
+        }
+
     Write-Host "=================================================" -ForegroundColor Cyan
-    Write-Host "  CloudCleaner v1.3.0" -ForegroundColor Cyan
+    Write-Host "  CloudCleaner v1.3.1" -ForegroundColor Cyan
     Write-Host "  Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive" -ForegroundColor Cyan
     Write-Host "=================================================" -ForegroundColor Cyan
     Write-Host "Servidor rodando em: $($script:Prefix)" -ForegroundColor Green
@@ -1233,10 +1328,26 @@ function Start-CloudCleaner {
         $listener.Close()
         Write-Host "`nServidor encerrado. Até a próxima!" -ForegroundColor Cyan
     }
+    } catch {
+        # Qualquer erro não previsto nos blocos acima (ex.: exceção ao criar o
+        # HttpListener antes mesmo do Start, falha dentro do loop de requisições que
+        # escapou dos try/catch internos) — antes disso o processo simplesmente
+        # sumia sem deixar rastro nenhum pro usuário.
+        Show-CloudCleanerFatalError -Context 'Start-CloudCleaner' -ErrorRecord $_
+    } finally {
+        if ($script:TranscriptStarted) { try { Stop-Transcript | Out-Null } catch {} }
+    }
 }
 
 # ===== INÍCIO =====
 # Quando carregado com -NoServe (dot-source nos testes), não inicia o servidor.
 if (-not $NoServe) {
-    Start-CloudCleaner
+    try {
+        Start-CloudCleaner
+    } catch {
+        # Rede de segurança final: mesmo algo lançado FORA do try interno de
+        # Start-CloudCleaner (ex.: erro ao definir $script:Prefix) fica visível,
+        # em vez de o processo simplesmente encerrar sem sinal nenhum.
+        Show-CloudCleanerFatalError -Context 'INÍCIO' -ErrorRecord $_
+    }
 }

@@ -7,6 +7,41 @@ seguindo [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.3.1] – 2026-08-11
+Correção: o instalador funcionava, mas o atalho instalado "não fazia nada" ao ser
+executado numa máquina Windows real (o `.exe` do 1.3.0 tinha sido compilado via Wine,
+nunca testado em Windows de verdade). Task TaskHub #2760 (rework).
+
+### Corrigido
+- **Erro fatal agora é VISÍVEL.** O launcher roda 100% oculto (sem janela de PowerShell)
+  — antes, qualquer falha na inicialização (porta 8080 ocupada, erro ao registrar o tipo
+  nativo Win32, exceção não prevista) só escrevia `Write-Host` numa janela que ninguém
+  via: o processo simplesmente morria em silêncio, indistinguível de "nada aconteceu".
+  Agora: (a) `Start-Transcript` grava toda a execução em `CloudCleaner.log` ao lado do
+  programa; (b) qualquer erro fatal grava em `CloudCleaner-error.log` E mostra uma caixa
+  de mensagem (`System.Windows.Forms.MessageBox`) explicando o problema; (c) o local do
+  log cai automaticamente para `%LOCALAPPDATA%\CloudCleaner` (ou `%TEMP%\CloudCleaner`)
+  se o diretório de instalação não for gravável pelo usuário atual.
+- **`[Console]::OutputEncoding` deixou de poder derrubar o script inteiro.** Era a
+  primeira instrução executada; lançava `IOException` ("The handle is invalid") em
+  processos sem console de verdade anexado — cenário plausível para o launcher via
+  `wscript.exe` + `powershell.exe -WindowStyle Hidden`. Agora envolvida em try/catch
+  (é só cosmético — não pode ser fatal).
+- **`Add-Type` do tipo nativo `Win32.NativeFs`** também passou a ficar protegido por
+  try/catch (registrado no log de erro em vez de matar o processo inteiro).
+- **Instalador (`CloudCleaner.iss`): defesa contra "Mark of the Web".** Desde o Inno
+  Setup 6.1, se o `setup.exe` (baixado do GitHub, então marcado como "da internet")
+  carrega essa marca, os arquivos que ele extrai herdam a mesma marca — silenciosamente.
+  Um passo novo (`Unblock-File`, oculto, executado durante a instalação) remove a marca
+  dos arquivos recém-copiados antes de oferecer "Abrir agora".
+- **Launcher (`CloudCleaner.vbs`) ganhou seu próprio log de falha.** Se o próprio passo
+  de disparar o PowerShell falhar (objeto COM indisponível, `WScript.Shell.Run`
+  rejeitando o comando), agora grava `CloudCleaner-launch-error.log` ao lado do launcher
+  em vez de falhar 100% em silêncio, sem nem chegar a rodar o `.ps1` (e portanto sem
+  nenhum outro log que registrasse o problema).
+
+---
+
 ## [1.3.0] – 2026-08-08
 Instalador Windows + o programa aprende a se desligar sozinho. (Task TaskHub #2760, Opção B.)
 
