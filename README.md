@@ -103,6 +103,20 @@ Para encerrar, volte ao terminal e pressione **Ctrl+C**.
    - **🗑️ Deletar** — apaga os arquivos (pede confirmação no modal).
 4. Use o **breadcrumb** para voltar a qualquer nível anterior.
 
+### 5. Gerar o instalador Windows (.exe)
+
+Quem preferir instalar via `.exe` (em vez de rodar o `.ps1` direto) pode compilar o
+instalador com um único comando, sem depender do CI do GitHub:
+
+```bash
+./installer/build-installer.sh
+```
+
+O script gera `installer/dist/CloudCleaner-Setup-vX.Y.Z.exe`. Ele funciona tanto no
+Windows (usando um Inno Setup instalado nativamente) quanto no Linux/macOS (via Wine) —
+detalhes de pré-requisitos e como preparar o ambiente do zero estão no cabeçalho do
+próprio script (`installer/build-installer.sh`).
+
 ---
 
 ## 🧠 Conceitos: Lógico vs. Local
