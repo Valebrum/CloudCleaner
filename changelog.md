@@ -7,6 +7,36 @@ seguindo [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.3.2] – 2026-08-18
+Correção da causa raiz de "instalei, cliquei no atalho e não aconteceu nada" — o problema
+que persistia desde o 1.3.0. Task TaskHub #2760 (rework 2). **Esta é a primeira versão
+verificada rodando numa máquina Windows real** (Windows 11, PowerShell 5.1).
+
+### Corrigido
+- **`CloudCleaner.ps1` não era sequer parseável pelo Windows PowerShell 5.1.** O arquivo
+  era UTF-8 **sem BOM**; o PowerShell que vem no Windows lê `.ps1` sem BOM usando a
+  *codepage ANSI* do sistema (cp1252 no Brasil), não UTF-8. O travessão `—` (U+2014, bytes
+  `E2 80 94`) virava, em cp1252, `â€` + `”` — e essa aspa curva de fechamento **encerrava a
+  string no meio da linha**, cascateando em erro de parse no arquivo inteiro.
+  Consequência: **nenhuma linha do script chegava a executar** — por isso o log e a caixa
+  de erro adicionados no 1.3.1 nunca apareciam (eles moram *dentro* do arquivo que não
+  compilava), e o usuário via silêncio absoluto.
+  Correção: todos os `.ps1` do repo passaram a ter **BOM UTF-8**.
+  Por que passou despercebido: em Linux/`pwsh` 7 (onde a suíte roda) o padrão é UTF-8, e
+  o script parseava normalmente — a suíte ficava verde enquanto o programa não abria.
+- **Launcher não avisava mais em silêncio.** O `CloudCleaner.vbs` mandava o PowerShell
+  rodar e ia embora, sem nunca verificar se o programa subiu. Agora ele **espera o
+  servidor local responder** (até 25s) e, se não subir, mostra uma **mensagem na tela**
+  com o motivo e o caminho da pasta do programa, em vez de deixar "nada aconteceu".
+  O arquivo também passou a ser ASCII puro, para não depender de codepage.
+
+### Adicionado
+- `tests/Encoding.Tests.ps1`: guarda de regressão que **falha a suíte** se qualquer `.ps1`
+  do repo tiver caractere não-ASCII sem BOM UTF-8 (o defeito exato acima). Roda no início
+  de `tests/Run-Tests.ps1`, antes de tudo.
+
+---
+
 ## [1.3.1] – 2026-08-11
 Correção: o instalador funcionava, mas o atalho instalado "não fazia nada" ao ser
 executado numa máquina Windows real (o `.exe` do 1.3.0 tinha sido compilado via Wine,

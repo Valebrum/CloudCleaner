@@ -10,7 +10,7 @@
 ; Setup via Chocolatey e roda o mesmo comando.
 
 #define MyAppName "CloudCleaner"
-#define MyAppVersion "1.3.1"
+#define MyAppVersion "1.3.2"
 #define MyAppPublisher "Grupo Valebrum"
 #define MyAppURL "https://github.com/Valebrum/CloudCleaner"
 

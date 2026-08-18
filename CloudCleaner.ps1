@@ -1,8 +1,8 @@
-# CloudCleaner - Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive
+﻿# CloudCleaner - Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive
 # Idealizador: Nelson Brum
 # Desenvolvedor: Claude + Nelson
-# Versão: 1.3.1
-# Data: 2026-08-11
+# Versão: 1.3.2
+# Data: 2026-08-18
 #
 # O que faz:
 #   Analisa pastas (OneDrive-friendly), comparando tamanho LÓGICO (total na nuvem)
@@ -1114,7 +1114,7 @@ function Start-CloudCleaner {
         }
 
     Write-Host "=================================================" -ForegroundColor Cyan
-    Write-Host "  CloudCleaner v1.3.1" -ForegroundColor Cyan
+    Write-Host "  CloudCleaner v1.3.2" -ForegroundColor Cyan
     Write-Host "  Analisador e Otimizador de Pastas OneDrive, iCloud Drive e Google Drive" -ForegroundColor Cyan
     Write-Host "=================================================" -ForegroundColor Cyan
     Write-Host "Servidor rodando em: $($script:Prefix)" -ForegroundColor Green
