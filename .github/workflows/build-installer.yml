@@ -1,0 +1,94 @@
+name: Build do instalador Windows
+
+# Compila o instalador (.exe) do CloudCleaner com o Inno Setup, no Windows.
+#
+# Quando roda:
+#   - release published  → compila e ANEXA o .exe na própria release (o caminho normal);
+#   - workflow_dispatch  → build sob demanda, publicado como artifact (pra testar/conferir);
+#   - pull_request       → só quando o PR mexe no instalador, pra pegar quebra antes do merge.
+#
+# A receita equivalente pra rodar na mão (Linux, via Wine) está em
+# installer/build-installer.sh — os dois compilam o MESMO installer/CloudCleaner.iss.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'installer/**'
+      - '.github/workflows/build-installer.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar o Inno Setup 6
+        run: choco install innosetup --no-progress -y
+
+      - name: Ler a versão do CloudCleaner.iss
+        id: versao
+        shell: pwsh
+        run: |
+          $iss = Get-Content installer/CloudCleaner.iss -Raw
+          if ($iss -notmatch '#define\s+MyAppVersion\s+"([^"]+)"') {
+            throw "Não achei MyAppVersion em installer/CloudCleaner.iss"
+          }
+          $v = $Matches[1]
+          Write-Host "Versão declarada no instalador: $v"
+          "versao=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Conferir se a versão bate com a tag da release
+        if: github.event_name == 'release'
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.release.tag_name }}" -replace '^v', ''
+          $iss = "${{ steps.versao.outputs.versao }}"
+          if ($tag -ne $iss) {
+            throw "Versão do instalador ($iss) diferente da tag da release ($tag). Atualize MyAppVersion em installer/CloudCleaner.iss antes de publicar."
+          }
+          Write-Host "Versão confere: $iss"
+
+      - name: Compilar o instalador
+        shell: pwsh
+        run: |
+          # ATENÇÃO: as chaves em ${env:...} são obrigatórias — sem elas o PowerShell lê
+          # "$env:ProgramFiles" e trata "(x86)" como texto solto, e o caminho sai errado.
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Não achei o compilador do Inno Setup em $iscc" }
+          & $iscc installer\CloudCleaner.iss
+
+      - name: Conferir que o .exe foi gerado
+        shell: pwsh
+        run: |
+          $exe = "installer\dist\CloudCleaner-Setup-v${{ steps.versao.outputs.versao }}.exe"
+          if (-not (Test-Path $exe)) {
+            Get-ChildItem installer\dist -ErrorAction SilentlyContinue
+            throw "O compilador rodou mas não encontrei $exe"
+          }
+          $tamanho = [math]::Round((Get-Item $exe).Length / 1MB, 2)
+          Write-Host "Instalador gerado: $exe ($tamanho MB)"
+
+      - name: Publicar o instalador como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CloudCleaner-Setup-v${{ steps.versao.outputs.versao }}
+          path: installer/dist/CloudCleaner-Setup-v${{ steps.versao.outputs.versao }}.exe
+          if-no-files-found: error
+
+      - name: Anexar o instalador na release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" `
+            "installer\dist\CloudCleaner-Setup-v${{ steps.versao.outputs.versao }}.exe" `
+            --clobber
