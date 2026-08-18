@@ -117,6 +117,15 @@ Windows (usando um Inno Setup instalado nativamente) quanto no Linux/macOS (via 
 detalhes de pré-requisitos e como preparar o ambiente do zero estão no cabeçalho do
 próprio script (`installer/build-installer.sh`).
 
+**Build automático (GitHub Actions).** Não é preciso compilar na mão para publicar: ao
+**publicar uma release**, o workflow `.github/workflows/build-installer.yml` compila o
+instalador no Windows e **anexa o `.exe` à própria release**. Ele também roda **sob
+demanda** (aba *Actions* → *Build do instalador Windows* → *Run workflow*, que deixa o
+`.exe` como artifact) e em **PRs que mexem em `installer/**`**, para pegar quebra antes
+do merge. Se a tag da release não bater com o `MyAppVersion` de
+`installer/CloudCleaner.iss`, o build falha de propósito — evita publicar instalador com
+a versão errada.
+
 ---
 
 ## 🧠 Conceitos: Lógico vs. Local
