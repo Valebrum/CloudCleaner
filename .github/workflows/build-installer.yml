@@ -59,7 +59,11 @@ jobs:
       - name: Compilar o instalador
         shell: pwsh
         run: |
-          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" installer\CloudCleaner.iss
+          # ATENÇÃO: as chaves em ${env:...} são obrigatórias — sem elas o PowerShell lê
+          # "$env:ProgramFiles" e trata "(x86)" como texto solto, e o caminho sai errado.
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Não achei o compilador do Inno Setup em $iscc" }
+          & $iscc installer\CloudCleaner.iss
 
       - name: Conferir que o .exe foi gerado
         shell: pwsh
