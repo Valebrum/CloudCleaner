@@ -1,4 +1,4 @@
-# GoogleDriveGuardedCleanup.Tests.ps1 — TDD (Pester 5) da limpeza GUARDADA do
+﻿# GoogleDriveGuardedCleanup.Tests.ps1 — TDD (Pester 5) da limpeza GUARDADA do
 # content_cache do Google Drive Stream (task TaskHub #327, follow-up de #17/PR #8).
 #
 # Cobre as 3 salvaguardas exigidas pela task:

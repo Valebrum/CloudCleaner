@@ -1,4 +1,4 @@
-# Run-Tests.ps1 — testes do CloudCleaner (sem dependência de Pester).
+﻿# Run-Tests.ps1 — testes do CloudCleaner (sem dependência de Pester).
 # Faz dot-source do script com -NoServe (carrega só as funções) e roda asserts.
 #
 # Uso:  powershell -ExecutionPolicy Bypass -File .\tests\Run-Tests.ps1
@@ -6,6 +6,17 @@
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Guarda de encoding — roda ANTES de qualquer outra coisa.
+# Motivo (task #2760): o CloudCleaner.ps1 chegou a ser publicado como UTF-8 SEM BOM, o
+# que o torna IMPARSEÁVEL no Windows PowerShell 5.1 (o PowerShell que vem no Windows do
+# usuário). Aqui no Linux/pwsh 7 o dot-source abaixo funciona mesmo assim — foi por isso
+# que a suíte ficava verde enquanto o programa não abria na máquina do Nelson. Este
+# check é o único que enxerga esse tipo de defeito. Ver tests/Encoding.Tests.ps1.
+& (Join-Path $here 'Encoding.Tests.ps1')
+$script:EncodingFailed = ($LASTEXITCODE -ne 0)
+Write-Host ""
+
 . (Join-Path $here '..\CloudCleaner.ps1') -NoServe
 
 $script:Pass = 0
@@ -148,6 +159,7 @@ try {
 }
 
 Write-Host ""
-$summaryColor = 'Green'; if ($script:Fail -gt 0) { $summaryColor = 'Red' }
+$summaryColor = 'Green'; if ($script:Fail -gt 0 -or $script:EncodingFailed) { $summaryColor = 'Red' }
 Write-Host ("Resultado: {0} passou, {1} falhou." -f $script:Pass, $script:Fail) -ForegroundColor $summaryColor
-if ($script:Fail -gt 0) { exit 1 } else { exit 0 }
+if ($script:EncodingFailed) { Write-Host "Guarda de encoding FALHOU (ver topo da saida)." -ForegroundColor Red }
+if ($script:Fail -gt 0 -or $script:EncodingFailed) { exit 1 } else { exit 0 }
