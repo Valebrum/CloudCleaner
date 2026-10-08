@@ -1,0 +1,55 @@
+# tarefa 198637: CÓPIA do workflow reutilizável Valebrum/.github/.github/workflows/regras-minimas.yml.
+# Este repo é PÚBLICO e o repo .github da organização é privado, então o GitHub não deixa
+# chamar o reutilizável daqui (run morre em 0s com "workflow file issue"). Ao mudar o original,
+# atualize esta cópia.
+# Check reutilizavel das regras minimas da org (texto: Valebrum/ndv-ai-agent/REGRAS-MINIMAS.md).
+# Uso nos repos:  jobs.regras.uses: Valebrum/.github/.github/workflows/regras-minimas.yml@main
+# Reprova SO o inequivoco (segredo no diff da PR). O resto e aviso (::warning::), nunca trava.
+name: regras-minimas
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  regras:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Segredo no codigo (reprova)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar xz gitleaks
+          cfg=()
+          [ -f .gitleaks.toml ] && cfg=(--config .gitleaks.toml)
+          # So os commits desta PR; legado nao trava PR alheia.
+          # Falso positivo: comente "gitleaks:allow" na linha.
+          ./gitleaks git --no-banner --redact "${cfg[@]}" --log-opts="${BASE}..${HEAD}" .
+
+      - name: Avisos (nunca reprovam)
+        if: always()
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set +e
+          # 1) arquivo avulso/rascunho adicionado
+          git diff --name-only --diff-filter=A "$BASE" "$HEAD" \
+            | grep -E '(^|/)(tmp|temp|scratch|rascunho)[^/]*$|\.(bak|orig|old)$|(^|/)(teste|test)[_-]?[0-9a-z]*\.(sh|py)$' \
+            | grep -vE '(^|/)(tests?|__tests__|spec)/' \
+            | while read -r f; do echo "::warning file=$f::Arquivo com cara de rascunho. Script que roda mais de uma vez mora no repo, com teste (REGRAS-MINIMAS.md, regra 2)."; done
+          # 2) tabela de usuario/senha paralela em SQL/migration/modelo
+          git diff -U0 --diff-filter=AM "$BASE" "$HEAD" -- '*.sql' '*.py' '*.ts' '*.js' \
+            | grep -E '^\+' | grep -iE 'create table[^;]*\b(users?|usuarios?|accounts?|logins?)\b|\b(password_hash|senha_hash|hashed_password)\b' \
+            | head -5 \
+            | while read -r l; do echo "::warning::Possivel cadastro/login paralelo: ${l:0:120}. Pessoa e login sao da intranet (REGRAS-MINIMAS.md, regra 1)."; done
+          exit 0
