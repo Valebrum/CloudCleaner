@@ -8,9 +8,10 @@
 name: regras-minimas
 on:
   pull_request:
-
+    types: [opened, edited, synchronize, reopened]
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   regras:
@@ -53,3 +54,4 @@ jobs:
             | head -5 \
             | while read -r l; do echo "::warning::Possivel cadastro/login paralelo: ${l:0:120}. Pessoa e login sao da intranet (REGRAS-MINIMAS.md, regra 1)."; done
           exit 0
+    secrets: inherit
