@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Actions do GitHub: mensal e agrupado, para nao gerar enxurrada de PRs (TaskHub #205094)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
