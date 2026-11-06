@@ -10,9 +10,10 @@ updates:
       github-actions:
         patterns:
           - "*"
-    labels:
-      - "dependencies"
-      - "github-actions"
+    # Quarentena: nao propor versao publicada ha menos de 14 dias (TaskHub #203769).
+    # Atualizacao de seguranca ignora o cooldown.
+    cooldown:
+      default-days: 14
     commit-message:
       prefix: "chore"
       include: "scope"
