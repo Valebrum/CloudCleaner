@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Instalar o Inno Setup 6
         run: choco install innosetup --no-progress -y
@@ -77,7 +77,7 @@ jobs:
           Write-Host "Instalador gerado: $exe ($tamanho MB)"
 
       - name: Publicar o instalador como artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CloudCleaner-Setup-v${{ steps.versao.outputs.versao }}
           path: installer/dist/CloudCleaner-Setup-v${{ steps.versao.outputs.versao }}.exe
